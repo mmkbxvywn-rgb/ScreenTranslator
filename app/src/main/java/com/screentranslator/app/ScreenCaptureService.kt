@@ -28,15 +28,23 @@ class ScreenCaptureService : Service() {
     private var imageReader: ImageReader? = null
     private var worker: HandlerThread? = null
     private var handler: Handler? = null
-    private var finished = false
+    @Volatile private var finished = false
+    @Volatile private var processing = false
+    private var lastText = ""
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            cleanup()
+            return START_NOT_STICKY
+        }
+        if (projection != null) return START_NOT_STICKY
+
         createNotificationChannel()
         val notification = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("ScreenTranslator")
-            .setContentText("正在读取一次屏幕画面以识别文字")
+            .setContentText("正在持续识别屏幕文字；返回应用可停止")
             .setSmallIcon(android.R.drawable.ic_menu_search)
             .setOngoing(true)
             .build()
@@ -55,7 +63,7 @@ class ScreenCaptureService : Service() {
         }
         if (resultCode == 0 || data == null) {
             sendResult("未获得屏幕捕捉授权。")
-            stopSelf()
+            cleanup()
             return START_NOT_STICKY
         }
 
@@ -67,7 +75,7 @@ class ScreenCaptureService : Service() {
             val metrics = DisplayMetrics()
             @Suppress("DEPRECATION")
             (getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(metrics)
-            imageReader = ImageReader.newInstance(metrics.widthPixels, metrics.heightPixels, ImageFormat.YUV_420_888, 2)
+            imageReader = ImageReader.newInstance(metrics.widthPixels, metrics.heightPixels, ImageFormat.YUV_420_888, 3)
             projection?.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
                     cleanup()
@@ -83,7 +91,7 @@ class ScreenCaptureService : Service() {
                 null,
                 handler
             )
-            handler?.postDelayed({ recognizeFrame() }, 900)
+            handler?.postDelayed({ recognizeFrame() }, FIRST_FRAME_DELAY_MS)
         } catch (e: Exception) {
             sendResult("启动屏幕捕捉失败：${e.javaClass.simpleName}: ${e.message ?: "未知错误"}")
             cleanup()
@@ -92,23 +100,32 @@ class ScreenCaptureService : Service() {
     }
 
     private fun recognizeFrame() {
-        if (finished) return
+        if (finished || processing) return
         val image = try { imageReader?.acquireLatestImage() } catch (_: Exception) { null }
         if (image == null) {
-            handler?.postDelayed({ recognizeFrame() }, 300)
+            handler?.postDelayed({ recognizeFrame() }, RETRY_DELAY_MS)
             return
         }
-        val input = try { InputImage.fromMediaImage(image, 0) } catch (e: Exception) {
+        val input = try {
+            InputImage.fromMediaImage(image, 0)
+        } catch (e: Exception) {
             image.close()
             sendResult("无法读取屏幕画面：${e.message ?: "未知错误"}")
-            cleanup()
+            handler?.postDelayed({ recognizeFrame() }, RETRY_DELAY_MS)
             return
         }
+
+        processing = true
         val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
         recognizer.process(input)
             .addOnSuccessListener { result ->
                 val text = result.text.trim()
-                sendResult(if (text.isBlank()) "本次画面没有识别到文字。" else text)
+                // Only send changed text to avoid repeatedly calling the translation API
+                // for the same video frame/subtitle.
+                if (text.isNotBlank() && text != lastText) {
+                    lastText = text
+                    sendResult(text)
+                }
             }
             .addOnFailureListener { e ->
                 sendResult("OCR 识别失败：${e.message ?: "未知错误"}")
@@ -116,7 +133,8 @@ class ScreenCaptureService : Service() {
             .addOnCompleteListener {
                 image.close()
                 recognizer.close()
-                cleanup()
+                processing = false
+                if (!finished) handler?.postDelayed({ recognizeFrame() }, CAPTURE_INTERVAL_MS)
             }
     }
 
@@ -136,6 +154,7 @@ class ScreenCaptureService : Service() {
         handler?.removeCallbacksAndMessages(null)
         worker?.quitSafely()
         worker = null
+        handler = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -154,10 +173,14 @@ class ScreenCaptureService : Service() {
 
     companion object {
         const val ACTION_OCR_RESULT = "com.screentranslator.app.OCR_RESULT"
+        const val ACTION_STOP = "com.screentranslator.app.STOP_CAPTURE"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
         const val EXTRA_OCR_TEXT = "ocr_text"
         private const val CHANNEL_ID = "screen_capture"
         private const val NOTIFICATION_ID = 2401
+        private const val FIRST_FRAME_DELAY_MS = 900L
+        private const val CAPTURE_INTERVAL_MS = 1600L
+        private const val RETRY_DELAY_MS = 300L
     }
 }
