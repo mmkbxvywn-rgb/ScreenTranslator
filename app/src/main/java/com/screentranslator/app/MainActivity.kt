@@ -36,6 +36,8 @@ class MainActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var audioButton: Button
     private lateinit var translationModeButton: Button
+    private lateinit var speechTimingButton: Button
+    private var fastSentenceMode = false
     private var offlineTranslation = false
     private var listeningForAudio = false
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -168,6 +170,19 @@ class MainActivity : Activity() {
         }
         page.addView(translationModeButton, matchWidth())
 
+        speechTimingButton = Button(this).apply {
+            setOnClickListener {
+                fastSentenceMode = !fastSentenceMode
+                preferences.edit().putBoolean("fast_sentence_mode", fastSentenceMode).apply()
+                updateSpeechTimingButton()
+                showStatus(if (fastSentenceMode)
+                    "已切换为快速按句模式：约每 3 秒提交一段音频，识别到完整句子或明显分句后立即翻译。响应更快，但短音频和句子切分可能降低识别/翻译准确性。"
+                else
+                    "已切换为稳妥延迟模式：约每 8 秒提交一段音频，保留更多上下文，通常更利于识别和翻译完整语意，但字幕会更慢。")
+            }
+        }
+        page.addView(speechTimingButton, matchWidth())
+
         endpointInput = field(page, "API 地址（OpenAI 兼容接口）", "https://api.openai.com/v1")
         apiKeyInput = field(page, "API Key", "")
         apiKeyInput.inputType = 0x00000081
@@ -209,7 +224,9 @@ class MainActivity : Activity() {
         audioLanguageInput.setText(preferences.getString("audio_language", "en-US"))
         speechModelInput.setText(preferences.getString("speech_model", "whisper-1"))
         offlineTranslation = preferences.getBoolean("offline_translation", false)
+        fastSentenceMode = preferences.getBoolean("fast_sentence_mode", false)
         updateTranslationModeButton()
+        updateSpeechTimingButton()
         setContentView(scroll)
     }
 
@@ -383,6 +400,13 @@ class MainActivity : Activity() {
             "翻译模式：离线（点击切换在线）"
         else
             "翻译模式：在线（点击切换离线）"
+    }
+
+    private fun updateSpeechTimingButton() {
+        speechTimingButton.text = if (fastSentenceMode)
+            "语音节奏：快速按句（点击切换稳妥延迟）"
+        else
+            "语音节奏：稳妥延迟（点击切换快速按句）"
     }
 
     private fun showStatus(message: String) {
