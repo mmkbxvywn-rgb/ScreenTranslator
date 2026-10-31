@@ -130,10 +130,9 @@ class MainActivity : Activity() {
                     showStatus("请先允许显示在其他应用上层，再点击一次重新显示悬浮字幕。")
                     return@setOnClickListener
                 }
-                val text = lastOverlayText.ifBlank { "ScreenTranslator 已就绪，等待新的识别结果…" }
                 startService(Intent(this@MainActivity, ScreenCaptureService::class.java).apply {
                     action = ScreenCaptureService.ACTION_SHOW_TRANSLATION
-                    putExtra(ScreenCaptureService.EXTRA_OCR_TEXT, text)
+                    putExtra(ScreenCaptureService.EXTRA_OCR_TEXT, "")
                 })
                 showStatus("已请求重新显示悬浮字幕。")
             }
