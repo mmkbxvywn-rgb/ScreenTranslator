@@ -110,6 +110,7 @@ class ScreenCaptureService : Service() {
         try {
             val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             projection = manager.getMediaProjection(resultCode, data)
+            lastText = ""
             worker = HandlerThread("ScreenOCR").also { it.start() }
             handler = Handler(worker!!.looper)
             val metrics = DisplayMetrics()
