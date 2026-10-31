@@ -212,6 +212,11 @@ class MainActivity : Activity() {
             setOnClickListener { testApi() }
         }
         page.addView(testButton, matchWidth())
+        val speechTestButton = Button(this).apply {
+            text = "单独测试语音识别 API"
+            setOnClickListener { testSpeechApi() }
+        }
+        page.addView(speechTestButton, matchWidth())
 
         statusText = TextView(this).apply {
             textSize = 14f
@@ -423,6 +428,64 @@ class MainActivity : Activity() {
                 translator.close()
                 showStatus("离线模型下载失败：\${error.message ?: error.javaClass.simpleName}。请检查网络、存储空间或 Google Play 服务后重试。")
             }
+    }
+
+
+    private fun testSpeechApi() {
+        saveSettings()
+        val endpoint = preferences.getString("endpoint", "").orEmpty().trimEnd('/')
+        val key = preferences.getString("api_key", "").orEmpty()
+        val model = preferences.getString("speech_model", "whisper-1").orEmpty().ifBlank { "whisper-1" }
+        if (endpoint.isBlank() || key.isBlank()) {
+            showStatus("请先填写 API 地址和 API Key。语音模型填写在独立的“语音识别模型”栏。")
+            return
+        }
+        val url = if (endpoint.endsWith("/audio/transcriptions")) endpoint else "$endpoint/audio/transcriptions"
+        showStatus("正在单独测试语音识别接口（模型：$model）……")
+        thread {
+            var connection: HttpURLConnection? = null
+            val result = try {
+                val wav = silentWavForApiTest()
+                val boundary = "----ScreenTranslatorTest" + System.currentTimeMillis()
+                connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"; connectTimeout = 15000; readTimeout = 30000; doOutput = true
+                    setRequestProperty("Authorization", "Bearer $key")
+                    setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+                }
+                java.io.DataOutputStream(connection.outputStream).use { out ->
+                    fun field(name: String, value: String) {
+                        out.writeBytes("--$boundary\\r\\n")
+                        out.writeBytes("Content-Disposition: form-data; name=\\"$name\\"\\r\\n\\r\\n")
+                        out.write(value.toByteArray(Charsets.UTF_8)); out.writeBytes("\\r\\n")
+                    }
+                    field("model", model)
+                    out.writeBytes("--$boundary\\r\\n")
+                    out.writeBytes("Content-Disposition: form-data; name=\\"file\\"; filename=\\"test.wav\\"\\r\\n")
+                    out.writeBytes("Content-Type: audio/wav\\r\\n\\r\\n")
+                    out.write(wav); out.writeBytes("\\r\\n--$boundary--\\r\\n"); out.flush()
+                }
+                val code = connection.responseCode
+                val response = (if (code in 200..299) connection.inputStream else connection.errorStream)?.bufferedReader()?.use { it.readText() }.orEmpty()
+                if (code in 200..299) "语音 API 可用（HTTP $code）。响应：$response".take(1000)
+                else "语音 API 测试失败（HTTP $code）。聊天接口连接成功不代表语音接口可用。请检查服务商是否支持 /audio/transcriptions、模型“$model”是否受支持、API 根地址是否正确。返回：$response".take(1400)
+            } catch (e: Exception) {
+                "语音 API 请求失败：\${e.javaClass.simpleName}：\${e.message ?: "未知错误"}。请检查网络、API 地址和服务商接口兼容性。".take(1000)
+            } finally { connection?.disconnect() }
+            runOnUiThread { showStatus(result) }
+        }
+    }
+
+    private fun silentWavForApiTest(): ByteArray {
+        val rate = 16000
+        val pcm = ByteArray(rate)
+        val bytes = java.io.ByteArrayOutputStream()
+        val out = java.io.DataOutputStream(bytes)
+        fun leInt(v: Int) { out.writeByte(v and 255); out.writeByte((v shr 8) and 255); out.writeByte((v shr 16) and 255); out.writeByte((v shr 24) and 255) }
+        fun leShort(v: Int) { out.writeByte(v and 255); out.writeByte((v shr 8) and 255) }
+        out.writeBytes("RIFF"); leInt(36 + pcm.size); out.writeBytes("WAVEfmt "); leInt(16)
+        leShort(1); leShort(1); leInt(rate); leInt(rate * 2); leShort(2); leShort(16)
+        out.writeBytes("data"); leInt(pcm.size); out.write(pcm); out.flush()
+        return bytes.toByteArray()
     }
 
     private fun updateTranslationModeButton() {
