@@ -34,6 +34,10 @@ import java.util.concurrent.Executors
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 
 class ScreenCaptureService : Service() {
     private var projection: MediaProjection? = null
@@ -44,6 +48,8 @@ class ScreenCaptureService : Service() {
     @Volatile private var finished = false
     @Volatile private var processing = false
     @Volatile private var audioActive = false
+    @Volatile private var translationInProgress = false
+    @Volatile private var pendingTranslationText = ""
     private var lastText = ""
     private var overlayView: LinearLayout? = null
     private var overlayTextView: TextView? = null
@@ -199,8 +205,71 @@ class ScreenCaptureService : Service() {
     }
 
     private fun sendResult(text: String) {
-        if (!text.startsWith("OCR 识别失败") && !text.startsWith("无法读取")) updateOverlay(text)
+        val isError = text.startsWith("OCR 识别失败") || text.startsWith("无法读取") || text.startsWith("启动屏幕") || text.startsWith("未获得")
+        if (!isError) {
+            updateOverlay(text)
+            translateRecognizedText(text)
+        }
         sendBroadcast(Intent(ACTION_OCR_RESULT).setPackage(packageName).putExtra(EXTRA_OCR_TEXT, text))
+    }
+
+    private fun translateRecognizedText(sourceText: String) {
+        synchronized(this) {
+            if (translationInProgress) {
+                pendingTranslationText = sourceText
+                return
+            }
+            translationInProgress = true
+        }
+        Thread {
+            val prefs = getSharedPreferences("translator_settings", MODE_PRIVATE)
+            val endpoint = prefs.getString("endpoint", "").orEmpty().trimEnd('/')
+            val key = prefs.getString("api_key", "").orEmpty()
+            val model = prefs.getString("model", "").orEmpty()
+            var connection: HttpURLConnection? = null
+            val translated = try {
+                if (endpoint.isBlank() || key.isBlank() || model.isBlank()) {
+                    "请先回到 ScreenTranslator 配置并保存 API 地址、Key 和模型。"
+                } else {
+                    val apiUrl = if (endpoint.endsWith("/chat/completions")) endpoint else "$endpoint/chat/completions"
+                    connection = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
+                        requestMethod = "POST"
+                        connectTimeout = 15000
+                        readTimeout = 45000
+                        doOutput = true
+                        setRequestProperty("Content-Type", "application/json")
+                        setRequestProperty("Authorization", "Bearer $key")
+                    }
+                    val messages = JSONArray()
+                        .put(JSONObject().put("role", "system").put("content", "Translate the provided screen text into natural Simplified Chinese. Preserve names, numbers, line breaks, and meaning. If the text is already Chinese, briefly explain that it is already Chinese. Output only the translation."))
+                        .put(JSONObject().put("role", "user").put("content", sourceText.take(12000)))
+                    val body = JSONObject().put("model", model).put("messages", messages).toString()
+                    connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                    val code = connection.responseCode
+                    val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+                    val response = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    if (code in 200..299) {
+                        JSONObject(response).optJSONArray("choices")?.optJSONObject(0)
+                            ?.optJSONObject("message")?.optString("content")
+                            ?.takeIf { it.isNotBlank() } ?: "API 返回成功，但没有翻译文本。"
+                    } else "翻译接口返回 HTTP $code：$response".take(1000)
+                }
+            } catch (e: Exception) {
+                "翻译失败：${e.javaClass.simpleName}：${e.message ?: "未知错误"}"
+            } finally {
+                connection?.disconnect()
+            }
+            val display = "$sourceText\n\n—— 翻译 ——\n$translated"
+            updateOverlay(display)
+            sendBroadcast(Intent(ACTION_TRANSLATION_RESULT).setPackage(packageName).putExtra(EXTRA_OCR_TEXT, display))
+            val next: String
+            synchronized(this) {
+                translationInProgress = false
+                next = pendingTranslationText
+                pendingTranslationText = ""
+            }
+            if (next.isNotBlank() && next != sourceText && !finished) translateRecognizedText(next)
+        }.start()
     }
 
     private fun showOverlay(initialText: String) {
