@@ -259,6 +259,11 @@ class MainActivity : Activity() {
             }
             listeningForAudio = true
             audioButton.text = "停止语音转写"
+            val audioServiceIntent = Intent(this, ScreenCaptureService::class.java).apply {
+                action = ScreenCaptureService.ACTION_ENABLE_AUDIO
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(audioServiceIntent)
+            else startService(audioServiceIntent)
             beginListeningAgain()
         } catch (e: Exception) {
             listeningForAudio = false
@@ -287,6 +292,11 @@ class MainActivity : Activity() {
         try { speechRecognizer?.stopListening() } catch (_: Exception) {}
         speechRecognizer?.destroy()
         speechRecognizer = null
+        try {
+            startService(Intent(this, ScreenCaptureService::class.java).apply {
+                action = ScreenCaptureService.ACTION_DISABLE_AUDIO
+            })
+        } catch (_: Exception) {}
         audioButton.text = "开始语音转写与翻译"
         showStatus("已停止语音转写。")
     }
