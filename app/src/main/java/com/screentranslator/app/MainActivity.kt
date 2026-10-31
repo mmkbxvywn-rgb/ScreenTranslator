@@ -269,8 +269,7 @@ class MainActivity : Activity() {
         val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
             action = ScreenCaptureService.ACTION_START_PLAYBACK_AUDIO
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent)
-        else startService(serviceIntent)
+        startService(serviceIntent)
         showStatus("正在请求 Android 内部播放音频捕获。请先完成屏幕捕获授权；如果尚未授权，请点击上方“授权并开始实时识别”，然后再次启动本功能。语音识别将调用你配置的 /audio/transcriptions 接口。")
     }
 
