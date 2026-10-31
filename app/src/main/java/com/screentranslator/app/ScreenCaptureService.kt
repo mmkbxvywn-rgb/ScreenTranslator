@@ -307,9 +307,9 @@ class ScreenCaptureService : Service() {
             val translated = translateWithConfiguredApi(sourceText)
             if (finished) return
             val displayText = if (sourceType == "speech") {
-                "语音识别：\\n$sourceText\\n\\n—— 中文翻译 ——\\n$translated"
+                "语音识别：\n$sourceText\n\n—— 中文翻译 ——\n$translated"
             } else {
-                "$sourceText\\n\\n—— 中文翻译 ——\\n$translated"
+                "$sourceText\n\n—— 中文翻译 ——\n$translated"
             }
             updateOverlay(displayText)
             sendBroadcast(Intent(ACTION_TRANSLATION_RESULT).setPackage(packageName)
