@@ -444,7 +444,7 @@ class MainActivity : Activity() {
             showStatus("请先填写 API 地址和 API Key。语音模型填写在独立的“语音识别模型”栏。")
             return
         }
-        val url = if (endpoint.endsWith("/audio/transcriptions")) endpoint else "$endpoint/audio/transcriptions"
+        val url = when { endpoint.endsWith("/audio/transcriptions") -> endpoint; endpoint.endsWith("/chat/completions") -> endpoint.removeSuffix("/chat/completions") + "/audio/transcriptions"; else -> "$endpoint/audio/transcriptions" }
         showStatus("正在单独测试语音识别接口（模型：$model）……")
         thread {
             var connection: HttpURLConnection? = null
