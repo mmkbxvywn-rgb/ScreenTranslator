@@ -481,7 +481,7 @@ class MainActivity : Activity() {
                 if (code in 200..299) "语音 API 可用（HTTP $code）。响应：$response".take(1000)
                 else "语音 API 测试失败（HTTP $code）。聊天接口连接成功不代表语音接口可用。请检查服务商是否支持 /audio/transcriptions、模型“$model”是否受支持、API 根地址是否正确。返回：$response".take(1400)
             } catch (e: Exception) {
-                "语音 API 请求失败：\${e.javaClass.simpleName}：\${e.message ?: "未知错误"}。请检查网络、API 地址和服务商接口兼容性。".take(1000)
+                "语音 API 请求失败：" + e.javaClass.simpleName + "：" + (e.message ?: "未知错误") + "。请检查网络、API 地址和服务商接口兼容性。".take(1000)
             } finally {
                 connection?.disconnect()
             }
