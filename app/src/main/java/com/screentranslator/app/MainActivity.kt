@@ -16,9 +16,6 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.ViewGroup
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -35,9 +32,9 @@ class MainActivity : Activity() {
     private lateinit var apiKeyInput: EditText
     private lateinit var modelInput: EditText
     private lateinit var audioLanguageInput: EditText
+    private lateinit var speechModelInput: EditText
     private lateinit var statusText: TextView
     private lateinit var audioButton: Button
-    private var speechRecognizer: SpeechRecognizer? = null
     private var listeningForAudio = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private var receiverRegistered = false
@@ -140,7 +137,7 @@ class MainActivity : Activity() {
         page.addView(overlayButton, matchWidth())
 
         audioButton = Button(this).apply {
-            text = "开始语音转写与翻译"
+            text = "开始内部音频捕获与翻译"
             setOnClickListener {
                 if (listeningForAudio) stopAudioTranslation() else requestAudioPermissionAndStart()
             }
@@ -151,7 +148,8 @@ class MainActivity : Activity() {
         apiKeyInput = field(page, "API Key", "")
         apiKeyInput.inputType = 0x00000081
         modelInput = field(page, "模型名称", "gpt-4o-mini")
-        audioLanguageInput = field(page, "语音识别语言代码（例如 en-US、ja-JP、ko-KR）", "en-US")
+        audioLanguageInput = field(page, "音频语言代码（例如 en-US、ja-JP、ko-KR）", "en-US")
+        speechModelInput = field(page, "语音识别模型（API 需支持 /audio/transcriptions）", "whisper-1")
 
         val saveButton = Button(this).apply {
             text = "保存配置"
@@ -185,6 +183,7 @@ class MainActivity : Activity() {
         apiKeyInput.setText(preferences.getString("api_key", ""))
         modelInput.setText(preferences.getString("model", "gpt-4o-mini"))
         audioLanguageInput.setText(preferences.getString("audio_language", "en-US"))
+        speechModelInput.setText(preferences.getString("speech_model", "whisper-1"))
         setContentView(scroll)
     }
 
@@ -246,106 +245,44 @@ class MainActivity : Activity() {
                 Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")),
                 REQUEST_OVERLAY
             )
-            showStatus("请先允许显示在其他应用上层，再点击开始语音转写。")
+            showStatus("请先允许显示在其他应用上层，再点击开始内部音频翻译。")
             return
         }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_AUDIO_PERMISSION)
             return
         }
-        startAudioTranslation()
+        startPlaybackAudioCapture()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_AUDIO_PERMISSION) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) startAudioTranslation()
-            else showStatus("未获得麦克风权限，无法进行语音转写。")
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) startPlaybackAudioCapture()
+            else showStatus("未获得录音权限。Android 内部播放音频捕获同样要求授予此权限，但音频源是系统播放流而非麦克风。")
         }
     }
 
-    private fun startAudioTranslation() {
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            showStatus("此设备没有可用的语音识别服务。")
-            return
+    private fun startPlaybackAudioCapture() {
+        listeningForAudio = true
+        audioButton.text = "停止内部音频捕获"
+        val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
+            action = ScreenCaptureService.ACTION_START_PLAYBACK_AUDIO
         }
-        try {
-            speechRecognizer?.destroy()
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this).also { recognizer ->
-                recognizer.setRecognitionListener(object : RecognitionListener {
-                    override fun onReadyForSpeech(params: Bundle?) {
-                        showStatus("正在聆听视频/环境声音…识别到语句后会自动翻译并显示悬浮字幕。")
-                    }
-                    override fun onBeginningOfSpeech() {}
-                    override fun onRmsChanged(rmsdB: Float) {}
-                    override fun onBufferReceived(buffer: ByteArray?) {}
-                    override fun onEndOfSpeech() {}
-                    override fun onError(error: Int) {
-                        if (listeningForAudio) mainHandler.postDelayed({ beginListeningAgain() }, 700)
-                    }
-                    override fun onResults(results: Bundle?) {
-                        val phrase = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim().orEmpty()
-                        if (phrase.isNotBlank()) {
-                            runOnUiThread {
-                                showStatus("语音识别：\n$phrase\n\n正在翻译…")
-                                startService(Intent(this@MainActivity, ScreenCaptureService::class.java).apply {
-                                    action = ScreenCaptureService.ACTION_TRANSLATE_TEXT
-                                    putExtra(ScreenCaptureService.EXTRA_OCR_TEXT, phrase)
-                                    putExtra(ScreenCaptureService.EXTRA_SOURCE_TYPE, "speech")
-                                })
-                            }
-                        }
-                        if (listeningForAudio) mainHandler.postDelayed({ beginListeningAgain() }, 250)
-                    }
-                    override fun onPartialResults(partialResults: Bundle?) {
-                        val phrase = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
-                        if (phrase.isNotBlank()) showStatus("正在聆听…\n$phrase")
-                    }
-                    override fun onEvent(eventType: Int, params: Bundle?) {}
-                })
-            }
-            listeningForAudio = true
-            audioButton.text = "停止语音转写"
-            val audioServiceIntent = Intent(this, ScreenCaptureService::class.java).apply {
-                action = ScreenCaptureService.ACTION_ENABLE_AUDIO
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(audioServiceIntent)
-            else startService(audioServiceIntent)
-            beginListeningAgain()
-        } catch (e: Exception) {
-            listeningForAudio = false
-            showStatus("无法启动语音识别：${e.message ?: "未知错误"}")
-        }
-    }
-
-    private fun beginListeningAgain() {
-        if (!listeningForAudio) return
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, audioLanguageInput.text.toString().trim().ifBlank { "en-US" })
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-        }
-        try {
-            speechRecognizer?.startListening(intent)
-        } catch (_: Exception) {
-            if (listeningForAudio) mainHandler.postDelayed({ beginListeningAgain() }, 1000)
-        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent)
+        else startService(serviceIntent)
+        showStatus("正在请求 Android 内部播放音频捕获。请先完成屏幕捕获授权；如果尚未授权，请点击上方“授权并开始实时识别”，然后再次启动本功能。语音识别将调用你配置的 /audio/transcriptions 接口。")
     }
 
     private fun stopAudioTranslation() {
         listeningForAudio = false
-        mainHandler.removeCallbacksAndMessages(null)
-        try { speechRecognizer?.stopListening() } catch (_: Exception) {}
-        speechRecognizer?.destroy()
-        speechRecognizer = null
         try {
             startService(Intent(this, ScreenCaptureService::class.java).apply {
-                action = ScreenCaptureService.ACTION_DISABLE_AUDIO
+                action = ScreenCaptureService.ACTION_STOP_PLAYBACK_AUDIO
             })
         } catch (_: Exception) {}
-        audioButton.text = "开始语音转写与翻译"
-        showStatus("已停止语音转写。")
+        audioButton.text = "开始内部音频捕获与翻译"
+        showStatus("已请求停止内部播放音频捕获。")
     }
 
     private fun field(parent: LinearLayout, label: String, initial: String): EditText {
@@ -368,6 +305,7 @@ class MainActivity : Activity() {
             .putString("api_key", apiKeyInput.text.toString().trim())
             .putString("model", modelInput.text.toString().trim())
             .putString("audio_language", audioLanguageInput.text.toString().trim().ifBlank { "en-US" })
+            .putString("speech_model", speechModelInput.text.toString().trim().ifBlank { "whisper-1" })
             .apply()
     }
 
