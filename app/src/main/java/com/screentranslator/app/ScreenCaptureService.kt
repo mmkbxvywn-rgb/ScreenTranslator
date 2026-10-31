@@ -35,6 +35,14 @@ import android.widget.TextView
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
+import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.Translator
+import com.google.mlkit.nl.translate.TranslatorOptions
+import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.TranslateRemoteModel
+import com.google.mlkit.nl.languageid.LanguageIdentification
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -532,6 +540,9 @@ class ScreenCaptureService : Service() {
 
     private fun translateWithConfiguredApi(sourceText: String): String {
         val prefs = getSharedPreferences("translator_settings", MODE_PRIVATE)
+        if (prefs.getBoolean("offline_translation", false)) {
+            return translateOffline(sourceText)
+        }
         val endpoint = prefs.getString("endpoint", "").orEmpty().trimEnd('/')
         val key = prefs.getString("api_key", "").orEmpty()
         val model = prefs.getString("model", "").orEmpty()
@@ -566,6 +577,62 @@ class ScreenCaptureService : Service() {
             "翻译失败：${e.javaClass.simpleName}：${e.message ?: "未知错误"}"
         } finally {
             connection?.disconnect()
+        }
+    }
+
+    private fun translateOffline(sourceText: String): String {
+        if (sourceText.isBlank()) return ""
+        val detector = LanguageIdentification.getClient()
+        var detectedLanguage = "und"
+        val detectLatch = CountDownLatch(1)
+        detector.identifyLanguage(sourceText)
+            .addOnSuccessListener { detectedLanguage = it; detectLatch.countDown() }
+            .addOnFailureListener { detectLatch.countDown() }
+        if (!detectLatch.await(20, TimeUnit.SECONDS)) {
+            detector.close()
+            return "离线翻译失败：语言识别超时。"
+        }
+        detector.close()
+        if (detectedLanguage == "zh") return sourceText
+        val sourceLanguage = TranslateLanguage.fromLanguageTag(detectedLanguage)
+            ?: return "离线翻译暂不支持识别出的语言（$detectedLanguage）。请切换在线翻译。"
+        val options = TranslatorOptions.Builder()
+            .setSourceLanguage(sourceLanguage)
+            .setTargetLanguage(TranslateLanguage.CHINESE)
+            .build()
+        val translator: Translator = Translation.getClient(options)
+        try {
+            var downloadError: Exception? = null
+            val downloadLatch = CountDownLatch(1)
+            translator.downloadModelIfNeeded()
+                .addOnSuccessListener { downloadLatch.countDown() }
+                .addOnFailureListener { error -> downloadError = error; downloadLatch.countDown() }
+            if (!downloadLatch.await(90, TimeUnit.SECONDS)) {
+                return "离线翻译模型准备超时。请保持网络连接后重试。"
+            }
+            if (downloadError != null) {
+                return "离线翻译模型下载失败：${downloadError?.message ?: "请检查网络后重试"}"
+            }
+            var translated = ""
+            var translationError: Exception? = null
+            val translateLatch = CountDownLatch(1)
+            translator.translate(sourceText.take(4000))
+                .addOnSuccessListener { translated = it; translateLatch.countDown() }
+                .addOnFailureListener { error -> translationError = error; translateLatch.countDown() }
+            if (!translateLatch.await(60, TimeUnit.SECONDS)) {
+                return "离线翻译超时，请重试或切换在线翻译。"
+            }
+            if (translationError != null) {
+                return "离线翻译失败：${translationError?.message ?: "未知错误"}"
+            }
+            return translated.ifBlank { "离线翻译未返回结果。" }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return "离线翻译已中断。"
+        } catch (e: Exception) {
+            return "离线翻译失败：${e.javaClass.simpleName}：${e.message ?: "未知错误"}"
+        } finally {
+            translator.close()
         }
     }
 
