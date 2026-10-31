@@ -56,7 +56,17 @@ class MainActivity : Activity() {
                 return
             }
             val text = intent?.getStringExtra(ScreenCaptureService.EXTRA_OCR_TEXT).orEmpty()
-            if (text.isBlank()) {
+            if (text.startsWith("已启动 Android 内部播放音频捕获")) {
+                listeningForAudio = true
+                audioButton.text = "停止内部音频捕获"
+                showStatus(text)
+            } else if (text.startsWith("请先点击") || text.startsWith("内部音频捕获需要") ||
+                text.startsWith("无法启动内部音频捕获") || text.startsWith("内部音频录制器初始化失败") ||
+                text.startsWith("内部音频读取失败") || text.startsWith("语音识别 API")) {
+                listeningForAudio = false
+                audioButton.text = "开始内部音频捕获与翻译"
+                showStatus(text)
+            } else if (text.isBlank()) {
                 showStatus("屏幕识别没有返回内容。")
             } else if (text.startsWith("未获得") || text.startsWith("启动屏幕") ||
                 text.startsWith("无法读取") || text.startsWith("OCR 识别失败")) {
@@ -174,7 +184,7 @@ class MainActivity : Activity() {
         page.addView(statusText)
 
         page.addView(TextView(this).apply {
-            text = "隐私提示：屏幕内容会先在设备上进行 OCR；识别出的新文字会发送到你配置的 API 服务商进行翻译。请勿在敏感页面启动。API Key 保存在本机应用私有存储。当前版本实现持续屏幕 OCR、变化文本翻译、悬浮字幕，以及通过麦克风进行语音识别与翻译。语音识别会使用设备的语音识别服务。"
+            text = "隐私提示：屏幕内容会先在设备上进行 OCR；识别出的新文字会发送到你配置的 API 服务商进行翻译。请勿在敏感页面启动。API Key 保存在本机应用私有存储。当前版本实现持续屏幕 OCR、变化文本翻译、悬浮字幕，以及通过 Android 内部播放音频捕获进行语音识别与翻译。捕获的音频片段会发送到你配置的 /audio/transcriptions 接口。"
             textSize = 13f
             setPadding(0, dp(8), 0, 0)
         })
@@ -264,8 +274,8 @@ class MainActivity : Activity() {
     }
 
     private fun startPlaybackAudioCapture() {
-        listeningForAudio = true
-        audioButton.text = "停止内部音频捕获"
+        listeningForAudio = false
+        audioButton.text = "正在启动内部音频捕获…"
         val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
             action = ScreenCaptureService.ACTION_START_PLAYBACK_AUDIO
         }
