@@ -1,17 +1,24 @@
 package com.screentranslator.app
 
+import android.Manifest
 import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.provider.Settings
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.ViewGroup
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -28,6 +35,10 @@ class MainActivity : Activity() {
     private lateinit var apiKeyInput: EditText
     private lateinit var modelInput: EditText
     private lateinit var statusText: TextView
+    private lateinit var audioButton: Button
+    private var speechRecognizer: SpeechRecognizer? = null
+    private var listeningForAudio = false
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var receiverRegistered = false
     private var lastTranslatedText = ""
 
@@ -98,6 +109,14 @@ class MainActivity : Activity() {
         }
         page.addView(stopButton, matchWidth())
 
+        audioButton = Button(this).apply {
+            text = "开始语音转写与翻译"
+            setOnClickListener {
+                if (listeningForAudio) stopAudioTranslation() else requestAudioPermissionAndStart()
+            }
+        }
+        page.addView(audioButton, matchWidth())
+
         endpointInput = field(page, "API 地址（OpenAI 兼容接口）", "https://api.openai.com/v1")
         apiKeyInput = field(page, "API Key", "")
         apiKeyInput.inputType = 0x00000081
@@ -126,7 +145,7 @@ class MainActivity : Activity() {
         page.addView(statusText)
 
         page.addView(TextView(this).apply {
-            text = "隐私提示：屏幕内容会先在设备上进行 OCR；识别出的新文字会发送到你配置的 API 服务商进行翻译。请勿在敏感页面启动。API Key 保存在本机应用私有存储。当前版本实现持续屏幕 OCR 和变化文本翻译；悬浮字幕、语音转写尚未实现。"
+            text = "隐私提示：屏幕内容会先在设备上进行 OCR；识别出的新文字会发送到你配置的 API 服务商进行翻译。请勿在敏感页面启动。API Key 保存在本机应用私有存储。当前版本实现持续屏幕 OCR、变化文本翻译、悬浮字幕，以及通过麦克风进行语音识别与翻译。语音识别会使用设备的语音识别服务。"
             textSize = 13f
             setPadding(0, dp(8), 0, 0)
         })
@@ -159,6 +178,11 @@ class MainActivity : Activity() {
         super.onStop()
     }
 
+    override fun onDestroy() {
+        stopAudioTranslation()
+        super.onDestroy()
+    }
+
     @Deprecated("Deprecated by Android; retained for compatibility with screen-capture consent flow")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
@@ -179,6 +203,92 @@ class MainActivity : Activity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent)
         else startService(serviceIntent)
         showStatus("屏幕捕捉已授权，正在启动持续 OCR…")
+    }
+
+    private fun requestAudioPermissionAndStart() {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_AUDIO_PERMISSION)
+            return
+        }
+        startAudioTranslation()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_AUDIO_PERMISSION) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) startAudioTranslation()
+            else showStatus("未获得麦克风权限，无法进行语音转写。")
+        }
+    }
+
+    private fun startAudioTranslation() {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            showStatus("此设备没有可用的语音识别服务。")
+            return
+        }
+        try {
+            speechRecognizer?.destroy()
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this).also { recognizer ->
+                recognizer.setRecognitionListener(object : RecognitionListener {
+                    override fun onReadyForSpeech(params: Bundle?) {
+                        showStatus("正在聆听视频/环境声音…识别到语句后会自动翻译并显示悬浮字幕。")
+                    }
+                    override fun onBeginningOfSpeech() {}
+                    override fun onRmsChanged(rmsdB: Float) {}
+                    override fun onBufferReceived(buffer: ByteArray?) {}
+                    override fun onEndOfSpeech() {}
+                    override fun onError(error: Int) {
+                        if (listeningForAudio) mainHandler.postDelayed({ beginListeningAgain() }, 700)
+                    }
+                    override fun onResults(results: Bundle?) {
+                        val phrase = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim().orEmpty()
+                        if (phrase.isNotBlank()) {
+                            runOnUiThread {
+                                showStatus("语音识别：\n$phrase\n\n正在翻译…")
+                                translateText(phrase)
+                            }
+                        }
+                        if (listeningForAudio) mainHandler.postDelayed({ beginListeningAgain() }, 250)
+                    }
+                    override fun onPartialResults(partialResults: Bundle?) {
+                        val phrase = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
+                        if (phrase.isNotBlank()) showStatus("正在聆听…\n$phrase")
+                    }
+                    override fun onEvent(eventType: Int, params: Bundle?) {}
+                })
+            }
+            listeningForAudio = true
+            audioButton.text = "停止语音转写"
+            beginListeningAgain()
+        } catch (e: Exception) {
+            listeningForAudio = false
+            showStatus("无法启动语音识别：${e.message ?: "未知错误"}")
+        }
+    }
+
+    private fun beginListeningAgain() {
+        if (!listeningForAudio) return
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        }
+        try {
+            speechRecognizer?.startListening(intent)
+        } catch (_: Exception) {
+            if (listeningForAudio) mainHandler.postDelayed({ beginListeningAgain() }, 1000)
+        }
+    }
+
+    private fun stopAudioTranslation() {
+        listeningForAudio = false
+        mainHandler.removeCallbacksAndMessages(null)
+        try { speechRecognizer?.stopListening() } catch (_: Exception) {}
+        speechRecognizer?.destroy()
+        speechRecognizer = null
+        audioButton.text = "开始语音转写与翻译"
+        showStatus("已停止语音转写。")
     }
 
     private fun field(parent: LinearLayout, label: String, initial: String): EditText {
@@ -311,5 +421,6 @@ class MainActivity : Activity() {
     companion object {
         private const val REQUEST_CAPTURE = 502
         private const val REQUEST_OVERLAY = 503
+        private const val REQUEST_AUDIO_PERMISSION = 504
     }
 }
