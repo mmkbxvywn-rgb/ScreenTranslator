@@ -59,7 +59,7 @@ class ScreenCaptureService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            cleanup()
+            if (audioActive) stopScreenCaptureOnly() else cleanup()
             return START_NOT_STICKY
         }
         if (intent?.action == ACTION_ENABLE_AUDIO) {
@@ -115,7 +115,7 @@ class ScreenCaptureService : Service() {
             imageReader = ImageReader.newInstance(metrics.widthPixels, metrics.heightPixels, PixelFormat.RGBA_8888, 3)
             projection?.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
-                    cleanup()
+                    if (audioActive) stopScreenCaptureOnly() else cleanup()
                 }
             }, handler)
             virtualDisplay = projection?.createVirtualDisplay(
@@ -355,6 +355,24 @@ class ScreenCaptureService : Service() {
             "翻译失败：${e.javaClass.simpleName}：${e.message ?: "未知错误"}"
         } finally {
             connection?.disconnect()
+        }
+    }
+
+    private fun stopScreenCaptureOnly() {
+        try { virtualDisplay?.release() } catch (_: Exception) {}
+        virtualDisplay = null
+        try { imageReader?.close() } catch (_: Exception) {}
+        imageReader = null
+        val oldProjection = projection
+        projection = null
+        try { oldProjection?.stop() } catch (_: Exception) {}
+        handler?.removeCallbacksAndMessages(null)
+        worker?.quitSafely()
+        worker = null
+        handler = null
+        if (audioActive) {
+            promoteForeground()
+            updateOverlay("屏幕识别已停止，语音翻译仍在运行。")
         }
     }
 
