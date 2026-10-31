@@ -28,6 +28,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.DisplayMetrics
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
@@ -247,11 +248,57 @@ class ScreenCaptureService : Service() {
                 val manager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
                 val textView = TextView(this).apply {
                     text = initialText
-                    textSize = 15f
+                    textSize = getSharedPreferences("translator_settings", MODE_PRIVATE).getFloat("overlay_font_size", 15f)
                     setTextColor(Color.WHITE)
                     setPadding(12, 10, 8, 10)
                     maxLines = 7
                     layoutParams = LinearLayout.LayoutParams(0, WindowManager.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                val smallerButton = Button(this).apply {
+                    text = "A−"
+                    textSize = 12f
+                    minWidth = 38
+                    minHeight = 44
+                    setPadding(0, 0, 0, 0)
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(Color.TRANSPARENT)
+                    setOnClickListener {
+                        val nextSize = (textView.textSize / resources.displayMetrics.scaledDensity - 1f).coerceAtLeast(10f)
+                        textView.textSize = nextSize
+                        getSharedPreferences("translator_settings", MODE_PRIVATE).edit().putFloat("overlay_font_size", nextSize).apply()
+                    }
+                }
+                val largerButton = Button(this).apply {
+                    text = "A+"
+                    textSize = 12f
+                    minWidth = 38
+                    minHeight = 44
+                    setPadding(0, 0, 0, 0)
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(Color.TRANSPARENT)
+                    setOnClickListener {
+                        val nextSize = (textView.textSize / resources.displayMetrics.scaledDensity + 1f).coerceAtMost(28f)
+                        textView.textSize = nextSize
+                        getSharedPreferences("translator_settings", MODE_PRIVATE).edit().putFloat("overlay_font_size", nextSize).apply()
+                    }
+                }
+                val settingsButton = Button(this).apply {
+                    text = "⚙"
+                    textSize = 18f
+                    minWidth = 40
+                    minHeight = 44
+                    setPadding(0, 0, 0, 0)
+                    setTextColor(Color.WHITE)
+                    setBackgroundColor(Color.TRANSPARENT)
+                    setOnClickListener {
+                        try {
+                            val settingsIntent = Intent(this@ScreenCaptureService, MainActivity::class.java)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                            startActivity(settingsIntent)
+                        } catch (_: Exception) {
+                            updateOverlay("无法打开快捷设置，请从应用图标进入设置。")
+                        }
+                    }
                 }
                 val closeButton = Button(this).apply {
                     text = "×"
@@ -271,6 +318,9 @@ class ScreenCaptureService : Service() {
                     gravity = Gravity.CENTER_VERTICAL
                     setBackgroundColor(Color.argb(228, 20, 20, 20))
                     addView(textView)
+                    addView(smallerButton)
+                    addView(largerButton)
+                    addView(settingsButton)
                     addView(closeButton, LinearLayout.LayoutParams(
                         WindowManager.LayoutParams.WRAP_CONTENT,
                         WindowManager.LayoutParams.WRAP_CONTENT
@@ -285,6 +335,23 @@ class ScreenCaptureService : Service() {
                 ).apply {
                     gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
                     y = (resources.displayMetrics.density * 72).toInt()
+                }
+                var touchStartY = 0f
+                var windowStartY = 0
+                container.setOnTouchListener { _, event ->
+                    when (event.action) {
+                        MotionEvent.ACTION_DOWN -> {
+                            touchStartY = event.rawY
+                            windowStartY = params.y
+                            true
+                        }
+                        MotionEvent.ACTION_MOVE -> {
+                            params.y = windowStartY + (event.rawY - touchStartY).toInt()
+                            try { manager.updateViewLayout(container, params) } catch (_: Exception) {}
+                            true
+                        }
+                        else -> false
+                    }
                 }
                 manager.addView(container, params)
                 overlayManager = manager
