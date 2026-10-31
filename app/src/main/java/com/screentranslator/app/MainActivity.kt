@@ -35,6 +35,8 @@ class MainActivity : Activity() {
     private lateinit var speechModelInput: EditText
     private lateinit var statusText: TextView
     private lateinit var audioButton: Button
+    private lateinit var translationModeButton: Button
+    private var offlineTranslation = false
     private var listeningForAudio = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private var receiverRegistered = false
@@ -154,6 +156,18 @@ class MainActivity : Activity() {
         }
         page.addView(audioButton, matchWidth())
 
+        translationModeButton = Button(this).apply {
+            setOnClickListener {
+                offlineTranslation = !offlineTranslation
+                preferences.edit().putBoolean("offline_translation", offlineTranslation).apply()
+                updateTranslationModeButton()
+                showStatus(if (offlineTranslation)
+                    "已切换为离线翻译。首次使用某个语言时需要下载对应模型；下载完成后翻译可在无网络时运行。语音转文字仍使用配置的在线 /audio/transcriptions 接口。"
+                else "已切换为在线翻译，将使用你配置的 /chat/completions API。")
+            }
+        }
+        page.addView(translationModeButton, matchWidth())
+
         endpointInput = field(page, "API 地址（OpenAI 兼容接口）", "https://api.openai.com/v1")
         apiKeyInput = field(page, "API Key", "")
         apiKeyInput.inputType = 0x00000081
@@ -194,6 +208,8 @@ class MainActivity : Activity() {
         modelInput.setText(preferences.getString("model", "gpt-4o-mini"))
         audioLanguageInput.setText(preferences.getString("audio_language", "en-US"))
         speechModelInput.setText(preferences.getString("speech_model", "whisper-1"))
+        offlineTranslation = preferences.getBoolean("offline_translation", false)
+        updateTranslationModeButton()
         setContentView(scroll)
     }
 
@@ -360,6 +376,13 @@ class MainActivity : Activity() {
             }
             runOnUiThread { showStatus(result) }
         }
+    }
+
+    private fun updateTranslationModeButton() {
+        translationModeButton.text = if (offlineTranslation)
+            "翻译模式：离线（点击切换在线）"
+        else
+            "翻译模式：在线（点击切换离线）"
     }
 
     private fun showStatus(message: String) {
