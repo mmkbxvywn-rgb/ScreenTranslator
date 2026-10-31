@@ -35,6 +35,7 @@ class ScreenCaptureService : Service() {
     private var handler: Handler? = null
     @Volatile private var finished = false
     @Volatile private var processing = false
+    @Volatile private var audioActive = false
     private var lastText = ""
     private var overlayView: TextView? = null
     private var overlayManager: WindowManager? = null
@@ -47,24 +48,27 @@ class ScreenCaptureService : Service() {
             cleanup()
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_ENABLE_AUDIO) {
+            audioActive = true
+            promoteForeground()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_DISABLE_AUDIO) {
+            audioActive = false
+            if (projection != null) promoteForeground()
+            else {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+            return START_NOT_STICKY
+        }
         if (intent?.action == ACTION_SHOW_TRANSLATION) {
             updateOverlay(intent.getStringExtra(EXTRA_OCR_TEXT).orEmpty())
             return START_NOT_STICKY
         }
         if (projection != null) return START_NOT_STICKY
 
-        createNotificationChannel()
-        val notification = Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("ScreenTranslator")
-            .setContentText("正在持续识别屏幕文字；返回应用可停止")
-            .setSmallIcon(android.R.drawable.ic_menu_search)
-            .setOngoing(true)
-            .build()
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        promoteForeground()
 
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
         val data = if (Build.VERSION.SDK_INT >= 33) {
@@ -222,6 +226,25 @@ class ScreenCaptureService : Service() {
         stopSelf()
     }
 
+    private fun promoteForeground() {
+        createNotificationChannel()
+        val notification = Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle("ScreenTranslator")
+            .setContentText(if (projection != null) "正在识别屏幕文字" else "正在聆听语音并准备翻译")
+            .setSmallIcon(android.R.drawable.ic_menu_search)
+            .setOngoing(true)
+            .build()
+        if (Build.VERSION.SDK_INT >= 29) {
+            var types = 0
+            if (projection != null) types = types or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            if (audioActive) types = types or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            if (types == 0) types = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            startForeground(NOTIFICATION_ID, notification, types)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(CHANNEL_ID, "屏幕识别", NotificationManager.IMPORTANCE_LOW)
@@ -238,6 +261,8 @@ class ScreenCaptureService : Service() {
         const val ACTION_OCR_RESULT = "com.screentranslator.app.OCR_RESULT"
         const val ACTION_STOP = "com.screentranslator.app.STOP_CAPTURE"
         const val ACTION_SHOW_TRANSLATION = "com.screentranslator.app.SHOW_TRANSLATION"
+        const val ACTION_ENABLE_AUDIO = "com.screentranslator.app.ENABLE_AUDIO"
+        const val ACTION_DISABLE_AUDIO = "com.screentranslator.app.DISABLE_AUDIO"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
         const val EXTRA_OCR_TEXT = "ocr_text"
