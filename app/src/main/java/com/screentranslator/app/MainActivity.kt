@@ -241,6 +241,7 @@ class MainActivity : Activity() {
         updateTranslationModeButton()
         updateSpeechTimingButton()
         setContentView(scroll)
+        styleInterface(page)
     }
 
     override fun onStart() {
@@ -504,6 +505,50 @@ class MainActivity : Activity() {
 
     private fun showStatus(message: String) {
         statusText.text = message
+    }
+
+
+    private fun styleInterface(root: LinearLayout) {
+        root.setBackgroundColor(Color.rgb(244, 247, 251))
+        fun styleChildren(group: android.view.ViewGroup) {
+            for (i in 0 until group.childCount) {
+                val view = group.getChildAt(i)
+                when (view) {
+                    is Button -> {
+                        view.isAllCaps = false
+                        view.textSize = 15f
+                        view.setTextColor(Color.WHITE)
+                        view.backgroundTintList = ColorStateList.valueOf(Color.rgb(45, 93, 170))
+                        val lp = view.layoutParams as? LinearLayout.LayoutParams
+                        if (lp != null) {
+                            lp.topMargin = dp(5)
+                            lp.bottomMargin = dp(5)
+                            view.layoutParams = lp
+                        }
+                        view.minHeight = dp(48)
+                    }
+                    is EditText -> {
+                        view.textSize = 15f
+                        view.setPadding(dp(12), dp(10), dp(12), dp(10))
+                        view.background = GradientDrawable().apply {
+                            setColor(Color.WHITE)
+                            setStroke(dp(1), Color.rgb(210, 219, 232))
+                            cornerRadius = dp(10).toFloat()
+                        }
+                    }
+                    is TextView -> {
+                        if (view.textSize >= 26f) {
+                            view.setTextColor(Color.rgb(27, 48, 79))
+                            view.typeface = android.graphics.Typeface.DEFAULT_BOLD
+                        } else {
+                            view.setTextColor(Color.rgb(65, 77, 96))
+                        }
+                    }
+                    is android.view.ViewGroup -> styleChildren(view)
+                }
+            }
+        }
+        styleChildren(root)
     }
 
     private fun matchWidth() = LinearLayout.LayoutParams(
