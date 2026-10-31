@@ -23,6 +23,9 @@ import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
+import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.TranslatorOptions
+import com.google.mlkit.nl.translate.TranslateLanguage
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.concurrent.thread
@@ -169,6 +172,11 @@ class MainActivity : Activity() {
             }
         }
         page.addView(translationModeButton, matchWidth())
+        val downloadOfflineButton = Button(this).apply {
+            text = "下载/检查离线翻译模型"
+            setOnClickListener { downloadOfflineModel() }
+        }
+        page.addView(downloadOfflineButton, matchWidth())
 
         speechTimingButton = Button(this).apply {
             setOnClickListener {
@@ -393,6 +401,28 @@ class MainActivity : Activity() {
             }
             runOnUiThread { showStatus(result) }
         }
+    }
+
+
+    private fun downloadOfflineModel() {
+        val languageTag = audioLanguageInput.text.toString().trim().ifBlank { "en-US" }
+        val sourceLanguage = TranslateLanguage.fromLanguageTag(languageTag.substringBefore('-').lowercase())
+        if (sourceLanguage == null || sourceLanguage == TranslateLanguage.CHINESE) {
+            showStatus("无法下载对应模型。请填写视频原始语言代码，例如 en-US、ja-JP、ko-KR、fr-FR、de-DE。")
+            return
+        }
+        showStatus("正在检查/下载 $languageTag → 中文的离线翻译模型。请保持网络连接，首次下载可能需要一些时间……")
+        val translator = Translation.getClient(TranslatorOptions.Builder()
+            .setSourceLanguage(sourceLanguage).setTargetLanguage(TranslateLanguage.CHINESE).build())
+        translator.downloadModelIfNeeded()
+            .addOnSuccessListener {
+                translator.close()
+                showStatus("离线翻译模型已准备好：$languageTag → 中文。文字翻译可离线运行；语音转文字仍需要在线语音识别 API。")
+            }
+            .addOnFailureListener { error ->
+                translator.close()
+                showStatus("离线模型下载失败：\${error.message ?: error.javaClass.simpleName}。请检查网络、存储空间或 Google Play 服务后重试。")
+            }
     }
 
     private fun updateTranslationModeButton() {
