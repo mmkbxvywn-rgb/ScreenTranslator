@@ -40,28 +40,35 @@ class MainActivity : Activity() {
     private var listeningForAudio = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private var receiverRegistered = false
-    private var lastTranslatedText = ""
+    private var lastOverlayText = ""
 
     private val preferences by lazy { getSharedPreferences("translator_settings", MODE_PRIVATE) }
     private val ocrReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            val text = intent?.getStringExtra(ScreenCaptureService.EXTRA_OCR_TEXT).orEmpty()
             if (intent?.action == ScreenCaptureService.ACTION_TRANSLATION_RESULT) {
-                showStatus(text)
+                val source = intent.getStringExtra(ScreenCaptureService.EXTRA_SOURCE_TEXT).orEmpty()
+                val translated = intent.getStringExtra(ScreenCaptureService.EXTRA_TRANSLATION_TEXT).orEmpty()
+                val sourceType = intent.getStringExtra(ScreenCaptureService.EXTRA_SOURCE_TYPE).orEmpty()
+                lastOverlayText = if (sourceType == "speech") {
+                    "语音识别：\n$source\n\n—— 中文翻译 ——\n$translated"
+                } else {
+                    "$source\n\n—— 中文翻译 ——\n$translated"
+                }
+                showStatus(lastOverlayText)
                 return
             }
+            val text = intent?.getStringExtra(ScreenCaptureService.EXTRA_OCR_TEXT).orEmpty()
             if (text.isBlank()) {
                 showStatus("屏幕识别没有返回内容。")
             } else if (text.startsWith("未获得") || text.startsWith("启动屏幕") ||
                 text.startsWith("无法读取") || text.startsWith("OCR 识别失败")) {
                 showStatus(text)
             } else {
-                showStatus("正在实时识别屏幕文字…\n\n最新识别结果：\n$text\n\n正在请求翻译…")
-                lastTranslatedText = text
+                lastOverlayText = text
+                showStatus("正在实时识别屏幕文字…\n\n最新识别结果：\n$text\n\n翻译在前台或后台服务中继续处理。")
             }
         }
     }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         title = "ScreenTranslator"
@@ -87,6 +94,7 @@ class MainActivity : Activity() {
         val captureButton = Button(this).apply {
             text = "授权并开始实时识别"
             setOnClickListener {
+                saveSettings()
                 if (!Settings.canDrawOverlays(this@MainActivity)) {
                     val overlayIntent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
                     startActivityForResult(overlayIntent, REQUEST_OVERLAY)
@@ -109,6 +117,27 @@ class MainActivity : Activity() {
             }
         }
         page.addView(stopButton, matchWidth())
+
+        val overlayButton = Button(this).apply {
+            text = "重新显示悬浮字幕"
+            setOnClickListener {
+                if (!Settings.canDrawOverlays(this@MainActivity)) {
+                    startActivityForResult(
+                        Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")),
+                        REQUEST_OVERLAY
+                    )
+                    showStatus("请先允许显示在其他应用上层，再点击一次重新显示悬浮字幕。")
+                    return@setOnClickListener
+                }
+                val text = lastOverlayText.ifBlank { "ScreenTranslator 已就绪，等待新的识别结果…" }
+                startService(Intent(this@MainActivity, ScreenCaptureService::class.java).apply {
+                    action = ScreenCaptureService.ACTION_SHOW_TRANSLATION
+                    putExtra(ScreenCaptureService.EXTRA_OCR_TEXT, text)
+                })
+                showStatus("已请求重新显示悬浮字幕。")
+            }
+        }
+        page.addView(overlayButton, matchWidth())
 
         audioButton = Button(this).apply {
             text = "开始语音转写与翻译"
@@ -162,6 +191,8 @@ class MainActivity : Activity() {
         if (!receiverRegistered) {
             val filter = IntentFilter(ScreenCaptureService.ACTION_OCR_RESULT).apply {
                 addAction(ScreenCaptureService.ACTION_TRANSLATION_RESULT)
+            }.apply {
+                addAction(ScreenCaptureService.ACTION_TRANSLATION_RESULT)
             }
             if (Build.VERSION.SDK_INT >= 33) {
                 registerReceiver(ocrReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -198,7 +229,7 @@ class MainActivity : Activity() {
             showStatus("你取消了屏幕捕捉授权。")
             return
         }
-        lastTranslatedText = ""
+        lastOverlayText = ""
         val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
             putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode)
             putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data)
@@ -209,6 +240,7 @@ class MainActivity : Activity() {
     }
 
     private fun requestAudioPermissionAndStart() {
+        saveSettings()
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_AUDIO_PERMISSION)
             return
@@ -248,7 +280,11 @@ class MainActivity : Activity() {
                         if (phrase.isNotBlank()) {
                             runOnUiThread {
                                 showStatus("语音识别：\n$phrase\n\n正在翻译…")
-                                translateText(phrase)
+                                startService(Intent(this@MainActivity, ScreenCaptureService::class.java).apply {
+                                    action = ScreenCaptureService.ACTION_TRANSLATE_TEXT
+                                    putExtra(ScreenCaptureService.EXTRA_OCR_TEXT, phrase)
+                                    putExtra(ScreenCaptureService.EXTRA_SOURCE_TYPE, "speech")
+                                })
                             }
                         }
                         if (listeningForAudio) mainHandler.postDelayed({ beginListeningAgain() }, 250)
@@ -367,56 +403,6 @@ class MainActivity : Activity() {
                 connection?.disconnect()
             }
             runOnUiThread { showStatus(result) }
-        }
-    }
-
-    private fun translateText(sourceText: String) {
-        saveSettings()
-        val endpoint = preferences.getString("endpoint", "").orEmpty().trimEnd('/')
-        val key = preferences.getString("api_key", "").orEmpty()
-        val model = preferences.getString("model", "").orEmpty()
-        if (endpoint.isBlank() || key.isBlank() || model.isBlank()) {
-            showStatus("OCR 已完成，但尚未翻译：请填写并保存 API 地址、API Key 和模型名称。\n\n识别结果：\n$sourceText")
-            return
-        }
-        thread {
-            var connection: HttpURLConnection? = null
-            val result = try {
-                val url = if (endpoint.endsWith("/chat/completions")) endpoint else "$endpoint/chat/completions"
-                connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    connectTimeout = 15000
-                    readTimeout = 45000
-                    doOutput = true
-                    setRequestProperty("Content-Type", "application/json")
-                    setRequestProperty("Authorization", "Bearer $key")
-                }
-                val messages = JSONArray()
-                    .put(JSONObject().put("role", "system").put("content", "Translate the provided screen text into natural Simplified Chinese. Preserve names, numbers, line breaks, and meaning. If the text is already Chinese, briefly explain that it is already Chinese. Output only the translation."))
-                    .put(JSONObject().put("role", "user").put("content", sourceText.take(12000)))
-                val body = JSONObject().put("model", model).put("messages", messages).toString()
-                connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-                val code = connection.responseCode
-                val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-                val response = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-                if (code in 200..299) {
-                    val json = JSONObject(response)
-                    json.optJSONArray("choices")?.optJSONObject(0)
-                        ?.optJSONObject("message")?.optString("content")
-                        ?.takeIf { it.isNotBlank() } ?: "API 返回成功，但响应中没有翻译文本。"
-                } else "翻译接口返回 HTTP $code：$response".take(1500)
-            } catch (e: Exception) {
-                "翻译失败：${e.javaClass.simpleName}：${e.message ?: "未知错误"}"
-            } finally {
-                connection?.disconnect()
-            }
-            runOnUiThread {
-                showStatus("实时屏幕识别：\n$sourceText\n\n—— 翻译 ——\n$result\n\n（识别仍在后台继续；停止请点“停止屏幕识别”）")
-                startService(Intent(this@MainActivity, ScreenCaptureService::class.java).apply {
-                    action = ScreenCaptureService.ACTION_SHOW_TRANSLATION
-                    putExtra(ScreenCaptureService.EXTRA_OCR_TEXT, "$sourceText\n\n$result")
-                })
-            }
         }
     }
 
