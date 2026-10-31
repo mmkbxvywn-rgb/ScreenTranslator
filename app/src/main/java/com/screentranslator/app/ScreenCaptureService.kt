@@ -44,6 +44,7 @@ class ScreenCaptureService : Service() {
     @Volatile private var finished = false
     @Volatile private var processing = false
     @Volatile private var audioActive = false
+    @Volatile private var stoppingProjection = false
     private var lastText = ""
     private var overlayView: LinearLayout? = null
     private var overlayTextView: TextView? = null
@@ -117,7 +118,8 @@ class ScreenCaptureService : Service() {
             imageReader = ImageReader.newInstance(metrics.widthPixels, metrics.heightPixels, PixelFormat.RGBA_8888, 3)
             projection?.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
-                    if (audioActive) stopScreenCaptureOnly() else cleanup()
+                    if (stoppingProjection) return
+                    if (audioActive) stopScreenCaptureOnly(stopProjection = false) else cleanup()
                 }
             }, handler)
             virtualDisplay = projection?.createVirtualDisplay(
@@ -362,14 +364,17 @@ class ScreenCaptureService : Service() {
         }
     }
 
-    private fun stopScreenCaptureOnly() {
+    private fun stopScreenCaptureOnly(stopProjection: Boolean = true) {
         try { virtualDisplay?.release() } catch (_: Exception) {}
         virtualDisplay = null
         try { imageReader?.close() } catch (_: Exception) {}
         imageReader = null
         val oldProjection = projection
         projection = null
-        try { oldProjection?.stop() } catch (_: Exception) {}
+        if (stopProjection && oldProjection != null) {
+            stoppingProjection = true
+            try { oldProjection.stop() } catch (_: Exception) {} finally { stoppingProjection = false }
+        }
         handler?.removeCallbacksAndMessages(null)
         worker?.quitSafely()
         worker = null
