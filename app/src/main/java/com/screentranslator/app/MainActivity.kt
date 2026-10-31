@@ -289,6 +289,10 @@ class MainActivity : Activity() {
             }
             runOnUiThread {
                 showStatus("实时屏幕识别：\n$sourceText\n\n—— 翻译 ——\n$result\n\n（识别仍在后台继续；停止请点“停止屏幕识别”）")
+                startService(Intent(this@MainActivity, ScreenCaptureService::class.java).apply {
+                    action = ScreenCaptureService.ACTION_SHOW_TRANSLATION
+                    putExtra(ScreenCaptureService.EXTRA_OCR_TEXT, "$sourceText\n\n$result")
+                })
             }
         }
     }
