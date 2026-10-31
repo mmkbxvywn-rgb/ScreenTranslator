@@ -27,6 +27,7 @@ class MainActivity : Activity() {
     private lateinit var modelInput: EditText
     private lateinit var statusText: TextView
     private var receiverRegistered = false
+    private var lastTranslatedText = ""
 
     private val preferences by lazy { getSharedPreferences("translator_settings", MODE_PRIVATE) }
     private val ocrReceiver = object : BroadcastReceiver() {
@@ -35,12 +36,14 @@ class MainActivity : Activity() {
             if (text.isBlank()) {
                 showStatus("屏幕识别没有返回内容。")
             } else if (text.startsWith("未获得") || text.startsWith("启动屏幕") ||
-                text.startsWith("无法读取") || text.startsWith("OCR 识别失败") ||
-                text == "本次画面没有识别到文字。") {
+                text.startsWith("无法读取") || text.startsWith("OCR 识别失败")) {
                 showStatus(text)
             } else {
-                showStatus("屏幕文字已识别，正在请求翻译…\n\n识别结果：\n$text")
-                translateText(text)
+                showStatus("正在实时识别屏幕文字…\n\n最新识别结果：\n$text\n\n正在请求翻译…")
+                if (text != lastTranslatedText) {
+                    lastTranslatedText = text
+                    translateText(text)
+                }
             }
         }
     }
@@ -61,20 +64,31 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_HORIZONTAL
         })
         page.addView(TextView(this).apply {
-            text = "屏幕文字识别与 AI 翻译"
+            text = "实时屏幕文字识别与 AI 翻译"
             textSize = 16f
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(0, dp(8), 0, dp(24))
         })
 
         val captureButton = Button(this).apply {
-            text = "授权并识别当前屏幕"
+            text = "授权并开始实时识别"
             setOnClickListener {
                 val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                 startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_CAPTURE)
             }
         }
         page.addView(captureButton, matchWidth())
+
+        val stopButton = Button(this).apply {
+            text = "停止屏幕识别"
+            setOnClickListener {
+                startService(Intent(this@MainActivity, ScreenCaptureService::class.java).apply {
+                    action = ScreenCaptureService.ACTION_STOP
+                })
+                showStatus("已发送停止指令。若系统屏幕共享通知仍显示，请稍候确认服务已结束。")
+            }
+        }
+        page.addView(stopButton, matchWidth())
 
         endpointInput = field(page, "API 地址（OpenAI 兼容接口）", "https://api.openai.com/v1")
         apiKeyInput = field(page, "API Key", "")
@@ -99,12 +113,12 @@ class MainActivity : Activity() {
         statusText = TextView(this).apply {
             textSize = 14f
             setPadding(0, dp(16), 0, dp(16))
-            text = "先配置 API，再点“授权并识别当前屏幕”。Android 会弹出系统屏幕共享授权窗口；本版本识别一帧画面并翻译识别到的文字。"
+            text = "先配置并保存 API，再点“授权并开始实时识别”。授权后应用每隔约 1.6 秒读取一帧画面；识别到的文字发生变化时才请求翻译，以减少重复调用。"
         }
         page.addView(statusText)
 
         page.addView(TextView(this).apply {
-            text = "隐私提示：屏幕内容会先在设备上进行 OCR；识别出的文字会发送到你配置的 API 服务商进行翻译。请勿在敏感页面启动。API Key 保存在本机应用私有存储。当前是单帧识别原型，持续实时识别、语音转写和悬浮字幕尚未实现。"
+            text = "隐私提示：屏幕内容会先在设备上进行 OCR；识别出的新文字会发送到你配置的 API 服务商进行翻译。请勿在敏感页面启动。API Key 保存在本机应用私有存储。当前版本实现持续屏幕 OCR 和变化文本翻译；悬浮字幕、语音转写尚未实现。"
             textSize = 13f
             setPadding(0, dp(8), 0, 0)
         })
@@ -145,13 +159,14 @@ class MainActivity : Activity() {
             showStatus("你取消了屏幕捕捉授权。")
             return
         }
+        lastTranslatedText = ""
         val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
             putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode)
             putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent)
         else startService(serviceIntent)
-        showStatus("屏幕捕捉已授权，正在读取画面…")
+        showStatus("屏幕捕捉已授权，正在启动持续 OCR…")
     }
 
     private fun field(parent: LinearLayout, label: String, initial: String): EditText {
@@ -261,7 +276,7 @@ class MainActivity : Activity() {
                 connection?.disconnect()
             }
             runOnUiThread {
-                showStatus("屏幕识别结果：\n$sourceText\n\n—— 翻译 ——\n$result")
+                showStatus("实时屏幕识别：\n$sourceText\n\n—— 翻译 ——\n$result\n\n（识别仍在后台继续；停止请点“停止屏幕识别”）")
             }
         }
     }
