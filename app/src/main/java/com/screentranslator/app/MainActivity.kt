@@ -6,6 +6,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
+import android.provider.Settings
 import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
@@ -73,6 +75,12 @@ class MainActivity : Activity() {
         val captureButton = Button(this).apply {
             text = "授权并开始实时识别"
             setOnClickListener {
+                if (!Settings.canDrawOverlays(this@MainActivity)) {
+                    val overlayIntent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+                    startActivityForResult(overlayIntent, REQUEST_OVERLAY)
+                    showStatus("请在系统设置中允许 ScreenTranslator 显示在其他应用上层，然后返回应用并再次点击开始。")
+                    return@setOnClickListener
+                }
                 val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                 startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_CAPTURE)
             }
@@ -154,6 +162,10 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated by Android; retained for compatibility with screen-capture consent flow")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_OVERLAY) {
+            showStatus(if (Settings.canDrawOverlays(this)) "悬浮字幕权限已开启，请再次点击开始识别。" else "尚未授予悬浮字幕权限。")
+            return
+        }
         if (requestCode != REQUEST_CAPTURE) return
         if (resultCode != RESULT_OK || data == null) {
             showStatus("你取消了屏幕捕捉授权。")
@@ -294,5 +306,6 @@ class MainActivity : Activity() {
 
     companion object {
         private const val REQUEST_CAPTURE = 502
+        private const val REQUEST_OVERLAY = 503
     }
 }
