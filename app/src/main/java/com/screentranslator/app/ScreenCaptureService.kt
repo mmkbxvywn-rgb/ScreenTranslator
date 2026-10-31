@@ -476,6 +476,7 @@ class ScreenCaptureService : Service() {
 
     companion object {
         const val ACTION_OCR_RESULT = "com.screentranslator.app.OCR_RESULT"
+        const val ACTION_TRANSLATION_RESULT = "com.screentranslator.app.TRANSLATION_RESULT"
         const val ACTION_STOP = "com.screentranslator.app.STOP_CAPTURE"
         const val ACTION_SHOW_TRANSLATION = "com.screentranslator.app.SHOW_TRANSLATION"
         const val ACTION_TRANSLATE_TEXT = "com.screentranslator.app.TRANSLATE_TEXT"
