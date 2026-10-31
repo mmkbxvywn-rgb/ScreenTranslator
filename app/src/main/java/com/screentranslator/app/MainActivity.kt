@@ -34,6 +34,7 @@ class MainActivity : Activity() {
     private lateinit var endpointInput: EditText
     private lateinit var apiKeyInput: EditText
     private lateinit var modelInput: EditText
+    private lateinit var audioLanguageInput: EditText
     private lateinit var statusText: TextView
     private lateinit var audioButton: Button
     private var speechRecognizer: SpeechRecognizer? = null
@@ -151,6 +152,7 @@ class MainActivity : Activity() {
         apiKeyInput = field(page, "API Key", "")
         apiKeyInput.inputType = 0x00000081
         modelInput = field(page, "模型名称", "gpt-4o-mini")
+        audioLanguageInput = field(page, "语音识别语言代码（例如 en-US、ja-JP、ko-KR）", "en-US")
 
         val saveButton = Button(this).apply {
             text = "保存配置"
@@ -183,6 +185,7 @@ class MainActivity : Activity() {
         endpointInput.setText(preferences.getString("endpoint", "https://api.openai.com/v1"))
         apiKeyInput.setText(preferences.getString("api_key", ""))
         modelInput.setText(preferences.getString("model", "gpt-4o-mini"))
+        audioLanguageInput.setText(preferences.getString("audio_language", "en-US"))
         setContentView(scroll)
     }
 
@@ -314,7 +317,7 @@ class MainActivity : Activity() {
         if (!listeningForAudio) return
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, audioLanguageInput.text.toString().trim().ifBlank { "en-US" })
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
         }
@@ -359,6 +362,7 @@ class MainActivity : Activity() {
             .putString("endpoint", endpointInput.text.toString().trim().trimEnd('/'))
             .putString("api_key", apiKeyInput.text.toString().trim())
             .putString("model", modelInput.text.toString().trim())
+            .putString("audio_language", audioLanguageInput.text.toString().trim().ifBlank { "en-US" })
             .apply()
     }
 
