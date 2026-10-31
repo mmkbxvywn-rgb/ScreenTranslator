@@ -1,6 +1,12 @@
 package com.screentranslator.app
 
 import android.app.Activity
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.media.projection.MediaProjectionManager
+import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.view.ViewGroup
@@ -20,8 +26,24 @@ class MainActivity : Activity() {
     private lateinit var apiKeyInput: EditText
     private lateinit var modelInput: EditText
     private lateinit var statusText: TextView
+    private var receiverRegistered = false
 
     private val preferences by lazy { getSharedPreferences("translator_settings", MODE_PRIVATE) }
+    private val ocrReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val text = intent?.getStringExtra(ScreenCaptureService.EXTRA_OCR_TEXT).orEmpty()
+            if (text.isBlank()) {
+                showStatus("屏幕识别没有返回内容。")
+            } else if (text.startsWith("未获得") || text.startsWith("启动屏幕") ||
+                text.startsWith("无法读取") || text.startsWith("OCR 识别失败") ||
+                text == "本次画面没有识别到文字。") {
+                showStatus(text)
+            } else {
+                showStatus("屏幕文字已识别，正在请求翻译…\n\n识别结果：\n$text")
+                translateText(text)
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -39,11 +61,20 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_HORIZONTAL
         })
         page.addView(TextView(this).apply {
-            text = "实时屏幕翻译 · API 配置"
+            text = "屏幕文字识别与 AI 翻译"
             textSize = 16f
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(0, dp(8), 0, dp(24))
         })
+
+        val captureButton = Button(this).apply {
+            text = "授权并识别当前屏幕"
+            setOnClickListener {
+                val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_CAPTURE)
+            }
+        }
+        page.addView(captureButton, matchWidth())
 
         endpointInput = field(page, "API 地址（OpenAI 兼容接口）", "https://api.openai.com/v1")
         apiKeyInput = field(page, "API Key", "")
@@ -67,14 +98,14 @@ class MainActivity : Activity() {
 
         statusText = TextView(this).apply {
             textSize = 14f
-            setPadding(0, dp(12), 0, dp(16))
-            text = "请填写接口地址、API Key 和模型名称，然后保存或测试连接。"
+            setPadding(0, dp(16), 0, dp(16))
+            text = "先配置 API，再点“授权并识别当前屏幕”。Android 会弹出系统屏幕共享授权窗口；本版本识别一帧画面并翻译识别到的文字。"
         }
         page.addView(statusText)
 
         page.addView(TextView(this).apply {
-            text = "说明\n• API 地址填写服务商提供的根地址，通常以 /v1 结尾。\n• API Key 仅保存在本机应用私有存储中；不要把含密钥的截图或日志分享给他人。\n• 当前版本先完成自定义接口配置与连通性测试；屏幕 OCR、实时语音转写及悬浮字幕仍在开发中。"
-            textSize = 14f
+            text = "隐私提示：屏幕内容会先在设备上进行 OCR；识别出的文字会发送到你配置的 API 服务商进行翻译。请勿在敏感页面启动。API Key 保存在本机应用私有存储。当前是单帧识别原型，持续实时识别、语音转写和悬浮字幕尚未实现。"
+            textSize = 13f
             setPadding(0, dp(8), 0, 0)
         })
 
@@ -82,6 +113,45 @@ class MainActivity : Activity() {
         apiKeyInput.setText(preferences.getString("api_key", ""))
         modelInput.setText(preferences.getString("model", "gpt-4o-mini"))
         setContentView(scroll)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (!receiverRegistered) {
+            val filter = IntentFilter(ScreenCaptureService.ACTION_OCR_RESULT)
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(ocrReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                registerReceiver(ocrReceiver, filter)
+            }
+            receiverRegistered = true
+        }
+    }
+
+    override fun onStop() {
+        if (receiverRegistered) {
+            unregisterReceiver(ocrReceiver)
+            receiverRegistered = false
+        }
+        super.onStop()
+    }
+
+    @Deprecated("Deprecated by Android; retained for compatibility with screen-capture consent flow")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_CAPTURE) return
+        if (resultCode != RESULT_OK || data == null) {
+            showStatus("你取消了屏幕捕捉授权。")
+            return
+        }
+        val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
+            putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode)
+            putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent)
+        else startService(serviceIntent)
+        showStatus("屏幕捕捉已授权，正在读取画面…")
     }
 
     private fun field(parent: LinearLayout, label: String, initial: String): EditText {
@@ -139,17 +209,60 @@ class MainActivity : Activity() {
                 val code = connection.responseCode
                 val stream = if (code in 200..299) connection.inputStream else connection.errorStream
                 val response = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-                if (code in 200..299) {
-                    "连接成功（HTTP $code）。服务已返回响应。"
-                } else {
-                    "接口返回 HTTP $code：$response".take(1200)
-                }
+                if (code in 200..299) "连接成功（HTTP $code）。服务已返回响应。"
+                else "接口返回 HTTP $code：$response".take(1200)
             } catch (e: Exception) {
                 "连接失败：${e.javaClass.simpleName}：${e.message ?: "未知错误"}".take(800)
             } finally {
                 connection?.disconnect()
             }
             runOnUiThread { showStatus(result) }
+        }
+    }
+
+    private fun translateText(sourceText: String) {
+        saveSettings()
+        val endpoint = preferences.getString("endpoint", "").orEmpty().trimEnd('/')
+        val key = preferences.getString("api_key", "").orEmpty()
+        val model = preferences.getString("model", "").orEmpty()
+        if (endpoint.isBlank() || key.isBlank() || model.isBlank()) {
+            showStatus("OCR 已完成，但尚未翻译：请填写并保存 API 地址、API Key 和模型名称。\n\n识别结果：\n$sourceText")
+            return
+        }
+        thread {
+            var connection: HttpURLConnection? = null
+            val result = try {
+                val url = if (endpoint.endsWith("/chat/completions")) endpoint else "$endpoint/chat/completions"
+                connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 15000
+                    readTimeout = 45000
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json")
+                    setRequestProperty("Authorization", "Bearer $key")
+                }
+                val messages = JSONArray()
+                    .put(JSONObject().put("role", "system").put("content", "Translate the provided screen text into natural Simplified Chinese. Preserve names, numbers, line breaks, and meaning. If the text is already Chinese, briefly explain that it is already Chinese. Output only the translation."))
+                    .put(JSONObject().put("role", "user").put("content", sourceText.take(12000)))
+                val body = JSONObject().put("model", model).put("messages", messages).toString()
+                connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                val code = connection.responseCode
+                val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+                val response = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                if (code in 200..299) {
+                    val json = JSONObject(response)
+                    json.optJSONArray("choices")?.optJSONObject(0)
+                        ?.optJSONObject("message")?.optString("content")
+                        ?.takeIf { it.isNotBlank() } ?: "API 返回成功，但响应中没有翻译文本。"
+                } else "翻译接口返回 HTTP $code：$response".take(1500)
+            } catch (e: Exception) {
+                "翻译失败：${e.javaClass.simpleName}：${e.message ?: "未知错误"}"
+            } finally {
+                connection?.disconnect()
+            }
+            runOnUiThread {
+                showStatus("屏幕识别结果：\n$sourceText\n\n—— 翻译 ——\n$result")
+            }
         }
     }
 
@@ -163,4 +276,8 @@ class MainActivity : Activity() {
     )
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    companion object {
+        private const val REQUEST_CAPTURE = 502
+    }
 }
