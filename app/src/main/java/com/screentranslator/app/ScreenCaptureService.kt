@@ -12,7 +12,13 @@ import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.AudioPlaybackCaptureConfiguration
+import android.media.AudioAttributes
 import java.nio.ByteBuffer
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -44,6 +50,8 @@ class ScreenCaptureService : Service() {
     @Volatile private var finished = false
     @Volatile private var processing = false
     @Volatile private var audioActive = false
+    @Volatile private var playbackCaptureActive = false
+    @Volatile private var playbackAudioRecord: AudioRecord? = null
     @Volatile private var stoppingProjection = false
     private var lastText = ""
     private var overlayView: LinearLayout? = null
@@ -53,6 +61,7 @@ class ScreenCaptureService : Service() {
     @Volatile private var latestDisplayText = "ScreenTranslator 正在识别屏幕…"
     private val mainHandler = Handler(Looper.getMainLooper())
     private val translationExecutor = Executors.newSingleThreadExecutor()
+    private val playbackTranscriptionExecutor = Executors.newSingleThreadExecutor()
     private val translationLock = Any()
     private var pendingTranslation: Pair<String, String>? = null
     private var translationWorkerRunning = false
@@ -71,11 +80,20 @@ class ScreenCaptureService : Service() {
         }
         if (intent?.action == ACTION_DISABLE_AUDIO) {
             audioActive = false
+            stopPlaybackCapture()
             if (projection != null) promoteForeground()
             else {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_START_PLAYBACK_AUDIO) {
+            startPlaybackCapture()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_STOP_PLAYBACK_AUDIO) {
+            stopPlaybackCapture()
             return START_NOT_STICKY
         }
         if (intent?.action == ACTION_SHOW_TRANSLATION) {
@@ -287,6 +305,193 @@ class ScreenCaptureService : Service() {
         }
     }
 
+    private fun startPlaybackCapture() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            sendResult("内部音频捕获需要 Android 10 或更高版本。")
+            return
+        }
+        val activeProjection = projection
+        if (activeProjection == null) {
+            sendResult("请先点击“授权并开始实时识别”，完成 Android 屏幕捕获授权，再启动内部音频翻译。")
+            return
+        }
+        if (playbackCaptureActive) {
+            sendResult("内部音频捕获已经在运行。")
+            return
+        }
+        val prefs = getSharedPreferences("translator_settings", MODE_PRIVATE)
+        val language = prefs.getString("audio_language", "en-US").orEmpty().ifBlank { "en-US" }
+        val sampleRate = 16000
+        val channelMask = AudioFormat.CHANNEL_IN_MONO
+        val encoding = AudioFormat.ENCODING_PCM_16BIT
+        val minBuffer = AudioRecord.getMinBufferSize(sampleRate, channelMask, encoding)
+        if (minBuffer <= 0) {
+            sendResult("设备不支持所需的 PCM 音频格式，无法启动内部音频捕获。")
+            return
+        }
+        try {
+            val config = AudioPlaybackCaptureConfiguration.Builder(activeProjection)
+                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                .build()
+            val format = AudioFormat.Builder()
+                .setEncoding(encoding)
+                .setSampleRate(sampleRate)
+                .setChannelMask(channelMask)
+                .build()
+            val record = AudioRecord.Builder()
+                .setAudioFormat(format)
+                .setBufferSizeInBytes(maxOf(minBuffer * 4, sampleRate * 2 * 8))
+                .setAudioPlaybackCaptureConfig(config)
+                .build()
+            if (record.state != AudioRecord.STATE_INITIALIZED) {
+                record.release()
+                sendResult("内部音频录制器初始化失败。请确认已授权屏幕捕获，并检查目标应用是否允许音频捕获。")
+                return
+            }
+            playbackAudioRecord = record
+            playbackCaptureActive = true
+            audioActive = true
+            promoteForeground()
+            sendResult("已启动 Android 内部播放音频捕获。请播放视频；音频将分段送到配置的语音识别 API，再翻译为中文。")
+            Thread({
+                val chunkBytes = sampleRate * 2 * 8
+                val buffer = ByteArray(8192)
+                val chunk = ByteArrayOutputStream(chunkBytes)
+                var lastSubmit = System.currentTimeMillis()
+                try {
+                    record.startRecording()
+                    while (playbackCaptureActive && !finished) {
+                        val count = record.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING)
+                        if (count > 0) {
+                            chunk.write(buffer, 0, count)
+                            val now = System.currentTimeMillis()
+                            if (chunk.size() >= chunkBytes || now - lastSubmit >= 8000L) {
+                                val pcm = chunk.toByteArray()
+                                chunk.reset()
+                                lastSubmit = now
+                                if (pcm.size >= sampleRate * 2) {
+                                    val wav = pcmToWav(pcm, sampleRate, 1, 16)
+                                    playbackTranscriptionExecutor.execute {
+                                        val transcript = transcribePlaybackAudio(wav, language)
+                                        if (transcript.isNotBlank() && !transcript.startsWith("语音识别 API")) {
+                                            enqueueTranslation(transcript, "speech")
+                                        } else if (transcript.startsWith("语音识别 API")) {
+                                            sendResult(transcript)
+                                        }
+                                    }
+                                }
+                            }
+                        } else if (count < 0) {
+                            sendResult("内部音频读取失败，错误码：" + count)
+                            break
+                        }
+                    }
+                } catch (e: Exception) {
+                    if (playbackCaptureActive) sendResult("内部音频捕获失败：" + e.javaClass.simpleName + "：" + (e.message ?: "未知错误"))
+                } finally {
+                    try { record.stop() } catch (_: Exception) {}
+                    record.release()
+                    if (playbackAudioRecord === record) playbackAudioRecord = null
+                    playbackCaptureActive = false
+                }
+            }, "PlaybackAudioCapture").apply { isDaemon = true; start() }
+        } catch (e: Exception) {
+            playbackCaptureActive = false
+            sendResult("无法启动内部音频捕获：" + e.javaClass.simpleName + "：" + (e.message ?: "未知错误"))
+        }
+    }
+
+    private fun stopPlaybackCapture() {
+        playbackCaptureActive = false
+        val record = playbackAudioRecord
+        playbackAudioRecord = null
+        try { record?.stop() } catch (_: Exception) {}
+        try { record?.release() } catch (_: Exception) {}
+    }
+
+    private fun pcmToWav(pcm: ByteArray, sampleRate: Int, channels: Int, bitsPerSample: Int): ByteArray {
+        val output = ByteArrayOutputStream(pcm.size + 44)
+        val data = DataOutputStream(output)
+        val byteRate = sampleRate * channels * bitsPerSample / 8
+        data.writeBytes("RIFF")
+        writeLittleEndianInt(data, 36 + pcm.size)
+        data.writeBytes("WAVE")
+        data.writeBytes("fmt ")
+        writeLittleEndianInt(data, 16)
+        writeLittleEndianShort(data, 1)
+        writeLittleEndianShort(data, channels)
+        writeLittleEndianInt(data, sampleRate)
+        writeLittleEndianInt(data, byteRate)
+        writeLittleEndianShort(data, channels * bitsPerSample / 8)
+        writeLittleEndianShort(data, bitsPerSample)
+        data.writeBytes("data")
+        writeLittleEndianInt(data, pcm.size)
+        data.write(pcm)
+        data.flush()
+        return output.toByteArray()
+    }
+
+    private fun writeLittleEndianInt(out: DataOutputStream, value: Int) {
+        out.writeByte(value and 0xff)
+        out.writeByte((value shr 8) and 0xff)
+        out.writeByte((value shr 16) and 0xff)
+        out.writeByte((value shr 24) and 0xff)
+    }
+
+    private fun writeLittleEndianShort(out: DataOutputStream, value: Int) {
+        out.writeByte(value and 0xff)
+        out.writeByte((value shr 8) and 0xff)
+    }
+
+    private fun transcribePlaybackAudio(wav: ByteArray, language: String): String {
+        val prefs = getSharedPreferences("translator_settings", MODE_PRIVATE)
+        val endpoint = prefs.getString("endpoint", "").orEmpty().trimEnd('/')
+        val key = prefs.getString("api_key", "").orEmpty()
+        val model = prefs.getString("speech_model", "whisper-1").orEmpty().ifBlank { "whisper-1" }
+        if (endpoint.isBlank() || key.isBlank()) return "语音识别 API：请先配置 API 地址和 API Key。"
+        var connection: HttpURLConnection? = null
+        return try {
+            val url = if (endpoint.endsWith("/audio/transcriptions")) endpoint else endpoint + "/audio/transcriptions"
+            val boundary = "----ScreenTranslator" + System.currentTimeMillis()
+            connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 20000
+                readTimeout = 60000
+                doOutput = true
+                setRequestProperty("Authorization", "Bearer " + key)
+                setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary)
+            }
+            DataOutputStream(connection.outputStream).use { out ->
+                fun field(name: String, value: String) {
+                    out.writeBytes("--" + boundary + "\r\n")
+                    out.writeBytes("Content-Disposition: form-data; name=\"" + name + "\"\r\n\r\n")
+                    out.write(value.toByteArray(Charsets.UTF_8))
+                    out.writeBytes("\r\n")
+                }
+                field("model", model)
+                val lang = language.substringBefore('-').lowercase()
+                if (lang.isNotBlank()) field("language", lang)
+                out.writeBytes("--" + boundary + "\r\n")
+                out.writeBytes("Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n")
+                out.writeBytes("Content-Type: audio/wav\r\n\r\n")
+                out.write(wav)
+                out.writeBytes("\r\n--" + boundary + "--\r\n")
+                out.flush()
+            }
+            val code = connection.responseCode
+            val response = (if (code in 200..299) connection.inputStream else connection.errorStream)
+                ?.bufferedReader()?.use { it.readText() }.orEmpty()
+            if (code in 200..299) JSONObject(response).optString("text").trim()
+            else "语音识别 API 返回 HTTP " + code + "：" + response.take(1000)
+        } catch (e: Exception) {
+            "语音识别 API 请求失败：" + e.javaClass.simpleName + "：" + (e.message ?: "未知错误")
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
     private fun enqueueTranslation(sourceText: String, sourceType: String) {
         synchronized(translationLock) {
             pendingTranslation = sourceText to sourceType
@@ -389,7 +594,9 @@ class ScreenCaptureService : Service() {
     private fun cleanup() {
         if (finished) return
         finished = true
+        stopPlaybackCapture()
         translationExecutor.shutdownNow()
+        playbackTranscriptionExecutor.shutdownNow()
         removeOverlay()
         try { virtualDisplay?.release() } catch (_: Exception) {}
         virtualDisplay = null
@@ -444,6 +651,8 @@ class ScreenCaptureService : Service() {
         const val ACTION_TRANSLATION_RESULT = "com.screentranslator.app.TRANSLATION_RESULT"
         const val ACTION_ENABLE_AUDIO = "com.screentranslator.app.ENABLE_AUDIO"
         const val ACTION_DISABLE_AUDIO = "com.screentranslator.app.DISABLE_AUDIO"
+        const val ACTION_START_PLAYBACK_AUDIO = "com.screentranslator.app.START_PLAYBACK_AUDIO"
+        const val ACTION_STOP_PLAYBACK_AUDIO = "com.screentranslator.app.STOP_PLAYBACK_AUDIO"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
         const val EXTRA_OCR_TEXT = "ocr_text"
