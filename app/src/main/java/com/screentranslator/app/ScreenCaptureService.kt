@@ -531,7 +531,7 @@ class ScreenCaptureService : Service() {
         if (endpoint.isBlank() || key.isBlank()) return "语音识别 API：请先配置 API 地址和 API Key。"
         var connection: HttpURLConnection? = null
         return try {
-            val url = if (endpoint.endsWith("/audio/transcriptions")) endpoint else endpoint + "/audio/transcriptions"
+            val url = when { endpoint.endsWith("/audio/transcriptions") -> endpoint; endpoint.endsWith("/chat/completions") -> endpoint.removeSuffix("/chat/completions") + "/audio/transcriptions"; else -> endpoint + "/audio/transcriptions" }
             val boundary = "----ScreenTranslator" + System.currentTimeMillis()
             connection = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
