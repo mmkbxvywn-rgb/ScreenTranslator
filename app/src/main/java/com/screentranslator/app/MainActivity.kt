@@ -194,8 +194,6 @@ class MainActivity : Activity() {
         if (!receiverRegistered) {
             val filter = IntentFilter(ScreenCaptureService.ACTION_OCR_RESULT).apply {
                 addAction(ScreenCaptureService.ACTION_TRANSLATION_RESULT)
-            }.apply {
-                addAction(ScreenCaptureService.ACTION_TRANSLATION_RESULT)
             }
             if (Build.VERSION.SDK_INT >= 33) {
                 registerReceiver(ocrReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -244,6 +242,14 @@ class MainActivity : Activity() {
 
     private fun requestAudioPermissionAndStart() {
         saveSettings()
+        if (!Settings.canDrawOverlays(this)) {
+            startActivityForResult(
+                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")),
+                REQUEST_OVERLAY
+            )
+            showStatus("请先允许显示在其他应用上层，再点击开始语音转写。")
+            return
+        }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_AUDIO_PERMISSION)
             return
