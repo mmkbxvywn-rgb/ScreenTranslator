@@ -226,7 +226,7 @@ class ScreenCaptureService : Service() {
         stopSelf()
     }
 
-    private fun promoteForeground() {
+    private fun promoteForeground(includeProjection: Boolean = projection != null) {
         createNotificationChannel()
         val notification = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("ScreenTranslator")
@@ -236,7 +236,7 @@ class ScreenCaptureService : Service() {
             .build()
         if (Build.VERSION.SDK_INT >= 29) {
             var types = 0
-            if (projection != null) types = types or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            if (includeProjection || projection != null) types = types or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
             if (audioActive) types = types or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             if (types == 0) types = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
             startForeground(NOTIFICATION_ID, notification, types)
