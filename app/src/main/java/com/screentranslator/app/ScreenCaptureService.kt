@@ -72,6 +72,7 @@ class ScreenCaptureService : Service() {
     private val playbackTranscriptionExecutor = Executors.newSingleThreadExecutor()
     private val translationLock = Any()
     private var pendingTranslation: Pair<String, String>? = null
+    private val pendingSpeechTranslations = java.util.ArrayDeque<Pair<String, String>>()
     private var translationWorkerRunning = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -517,33 +518,38 @@ class ScreenCaptureService : Service() {
             val incoming = transcript.trim()
             if (incoming.isBlank()) return
             pendingSpeechSentence = (pendingSpeechSentence + " " + incoming).trim()
-            val pieces = Regex("(?<=[.!?。！？；;])\\s*").split(pendingSpeechSentence)
-            if (pieces.size > 1) {
-                val completedText = pieces.dropLast(1).joinToString(" ").trim()
-                if (completedText.isNotBlank()) ready.addAll(splitSpeechSentences(completedText))
-                pendingSpeechSentence = pieces.last().trim()
+
+            val sentenceMatcher = Regex("[^.!?。！？；;]+[.!?。！？；;]+").toPattern().matcher(pendingSpeechSentence)
+            var consumed = 0
+            while (sentenceMatcher.find()) {
+                val sentence = sentenceMatcher.group().trim()
+                if (sentence.isNotBlank()) ready.add(sentence)
+                consumed = sentenceMatcher.end()
             }
+            if (consumed > 0) pendingSpeechSentence = pendingSpeechSentence.substring(consumed).trim()
+
             if (pendingSpeechSentence.length >= 48) {
-                val clauseBoundary = Regex("(?<=[,，、:：])\\s*").split(pendingSpeechSentence)
-                if (clauseBoundary.size > 1) {
-                    val completedClause = clauseBoundary.dropLast(1).joinToString(" ").trim()
-                    if (completedClause.isNotBlank()) ready.add(completedClause)
-                    pendingSpeechSentence = clauseBoundary.last().trim()
+                val clauseMatcher = Regex("[^,，、:：]+[,，、:：]+").toPattern().matcher(pendingSpeechSentence)
+                var clauseConsumed = 0
+                while (clauseMatcher.find()) {
+                    val clause = clauseMatcher.group().trim()
+                    if (clause.isNotBlank()) ready.add(clause)
+                    clauseConsumed = clauseMatcher.end()
                 }
+                if (clauseConsumed > 0) pendingSpeechSentence = pendingSpeechSentence.substring(clauseConsumed).trim()
             }
         }
         ready.filter { it.isNotBlank() }.forEach { enqueueTranslation(it, "speech") }
     }
 
-    private fun splitSpeechSentences(text: String): List<String> {
-        return text.split(Regex("(?<=[.!?。！？；;])\\s*"))
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-    }
-
     private fun enqueueTranslation(sourceText: String, sourceType: String) {
         synchronized(translationLock) {
-            pendingTranslation = sourceText to sourceType
+            if (sourceType == "speech") {
+                pendingSpeechTranslations.addLast(sourceText to sourceType)
+            } else {
+                // For screen OCR, keep only the newest pending text to avoid a backlog of stale frames.
+                pendingTranslation = sourceText to sourceType
+            }
             if (translationWorkerRunning) return
             translationWorkerRunning = true
             translationExecutor.execute { drainTranslationQueue() }
@@ -553,13 +559,13 @@ class ScreenCaptureService : Service() {
     private fun drainTranslationQueue() {
         while (!finished) {
             val next = synchronized(translationLock) {
-                val item = pendingTranslation
-                if (item == null) {
-                    translationWorkerRunning = false
-                    null
-                } else {
-                    pendingTranslation = null
-                    item
+                when {
+                    !pendingSpeechTranslations.isEmpty() -> pendingSpeechTranslations.removeFirst()
+                    pendingTranslation != null -> pendingTranslation.also { pendingTranslation = null }
+                    else -> {
+                        translationWorkerRunning = false
+                        null
+                    }
                 }
             } ?: return
 
