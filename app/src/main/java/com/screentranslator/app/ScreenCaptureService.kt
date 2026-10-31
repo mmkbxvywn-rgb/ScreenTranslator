@@ -89,7 +89,7 @@ class ScreenCaptureService : Service() {
         }
         if (projection != null) return START_NOT_STICKY
 
-        promoteForeground()
+        promoteForeground(includeProjection = true)
 
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
         val data = if (Build.VERSION.SDK_INT >= 33) {
