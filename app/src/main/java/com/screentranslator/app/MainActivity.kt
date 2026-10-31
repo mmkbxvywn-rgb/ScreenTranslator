@@ -46,6 +46,10 @@ class MainActivity : Activity() {
     private val ocrReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val text = intent?.getStringExtra(ScreenCaptureService.EXTRA_OCR_TEXT).orEmpty()
+            if (intent?.action == ScreenCaptureService.ACTION_TRANSLATION_RESULT) {
+                showStatus(text)
+                return
+            }
             if (text.isBlank()) {
                 showStatus("屏幕识别没有返回内容。")
             } else if (text.startsWith("未获得") || text.startsWith("启动屏幕") ||
@@ -53,10 +57,7 @@ class MainActivity : Activity() {
                 showStatus(text)
             } else {
                 showStatus("正在实时识别屏幕文字…\n\n最新识别结果：\n$text\n\n正在请求翻译…")
-                if (text != lastTranslatedText) {
-                    lastTranslatedText = text
-                    translateText(text)
-                }
+                lastTranslatedText = text
             }
         }
     }
@@ -159,7 +160,9 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         if (!receiverRegistered) {
-            val filter = IntentFilter(ScreenCaptureService.ACTION_OCR_RESULT)
+            val filter = IntentFilter(ScreenCaptureService.ACTION_OCR_RESULT).apply {
+                addAction(ScreenCaptureService.ACTION_TRANSLATION_RESULT)
+            }
             if (Build.VERSION.SDK_INT >= 33) {
                 registerReceiver(ocrReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
             } else {
