@@ -407,7 +407,7 @@ class ScreenCaptureService : Service() {
         val record = playbackAudioRecord
         playbackAudioRecord = null
         try { record?.stop() } catch (_: Exception) {}
-        try { record?.release() } catch (_: Exception) {}
+        // The capture thread owns final release after stop() unblocks its read loop.
     }
 
     private fun pcmToWav(pcm: ByteArray, sampleRate: Int, channels: Int, bitsPerSample: Int): ByteArray {
