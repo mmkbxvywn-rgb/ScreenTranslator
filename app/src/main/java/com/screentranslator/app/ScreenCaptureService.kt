@@ -6,12 +6,13 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Color
-import android.graphics.ImageFormat
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
+import java.nio.ByteBuffer
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -91,7 +92,7 @@ class ScreenCaptureService : Service() {
             val metrics = DisplayMetrics()
             @Suppress("DEPRECATION")
             (getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(metrics)
-            imageReader = ImageReader.newInstance(metrics.widthPixels, metrics.heightPixels, ImageFormat.YUV_420_888, 3)
+            imageReader = ImageReader.newInstance(metrics.widthPixels, metrics.heightPixels, PixelFormat.RGBA_8888, 3)
             projection?.registerCallback(object : MediaProjection.Callback() {
                 override fun onStop() {
                     cleanup()
@@ -123,22 +124,22 @@ class ScreenCaptureService : Service() {
             handler?.postDelayed({ recognizeFrame() }, RETRY_DELAY_MS)
             return
         }
-        val input = try {
-            InputImage.fromMediaImage(image, 0)
+        val bitmap = try {
+            imageToBitmap(image)
         } catch (e: Exception) {
             image.close()
             sendResult("无法读取屏幕画面：${e.message ?: "未知错误"}")
             handler?.postDelayed({ recognizeFrame() }, RETRY_DELAY_MS)
             return
         }
+        image.close()
+        val input = InputImage.fromBitmap(bitmap, 0)
 
         processing = true
         val recognizer = TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
         recognizer.process(input)
             .addOnSuccessListener { result ->
                 val text = result.text.trim()
-                // Only send changed text to avoid repeatedly calling the translation API
-                // for the same video frame/subtitle.
                 if (text.isNotBlank() && text != lastText) {
                     lastText = text
                     sendResult(text)
@@ -148,82 +149,11 @@ class ScreenCaptureService : Service() {
                 sendResult("OCR 识别失败：${e.message ?: "未知错误"}")
             }
             .addOnCompleteListener {
-                image.close()
+                bitmap.recycle()
                 recognizer.close()
                 processing = false
                 if (!finished) handler?.postDelayed({ recognizeFrame() }, CAPTURE_INTERVAL_MS)
             }
-    }
-
-    private fun sendResult(text: String) {
-        if (!text.startsWith("OCR 识别失败") && !text.startsWith("无法读取")) updateOverlay(text)
-        sendBroadcast(Intent(ACTION_OCR_RESULT).setPackage(packageName).putExtra(EXTRA_OCR_TEXT, text))
-    }
-
-    private fun showOverlay(initialText: String) {
-        if (!android.provider.Settings.canDrawOverlays(this)) return
-        mainHandler.post {
-            if (overlayView != null || finished) return@post
-            try {
-                val manager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-                val view = TextView(this).apply {
-                    text = initialText
-                    textSize = 16f
-                    setTextColor(Color.WHITE)
-                    setBackgroundColor(Color.argb(220, 20, 20, 20))
-                    setPadding(24, 16, 24, 16)
-                    maxLines = 6
-                }
-                val params = WindowManager.LayoutParams(
-                    WindowManager.LayoutParams.MATCH_PARENT,
-                    WindowManager.LayoutParams.WRAP_CONTENT,
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                    PixelFormat.TRANSLUCENT
-                ).apply {
-                    gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                    y = (resources.displayMetrics.density * 72).toInt()
-                }
-                manager.addView(view, params)
-                overlayManager = manager
-                overlayView = view
-            } catch (_: Exception) {
-                // OCR still works if Android denies the overlay.
-            }
-        }
-    }
-
-    private fun updateOverlay(text: String) {
-        mainHandler.post {
-            val view = overlayView
-            if (view == null) showOverlay(text) else view.text = text
-        }
-    }
-
-    private fun removeOverlay() {
-        mainHandler.post {
-            try { overlayView?.let { overlayManager?.removeView(it) } } catch (_: Exception) {}
-            overlayView = null
-            overlayManager = null
-        }
-    }
-
-    private fun cleanup() {
-        if (finished) return
-        finished = true
-        removeOverlay()
-        try { virtualDisplay?.release() } catch (_: Exception) {}
-        virtualDisplay = null
-        try { imageReader?.close() } catch (_: Exception) {}
-        imageReader = null
-        try { projection?.stop() } catch (_: Exception) {}
-        projection = null
-        handler?.removeCallbacksAndMessages(null)
-        worker?.quitSafely()
-        worker = null
-        handler = null
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
     }
 
     private fun promoteForeground(includeProjection: Boolean = projection != null) {
