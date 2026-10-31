@@ -70,7 +70,7 @@ class ScreenCaptureService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            if (audioActive) stopScreenCaptureOnly() else cleanup()
+            if (audioActive || playbackCaptureActive) stopScreenCaptureOnly() else cleanup()
             return START_NOT_STICKY
         }
         if (intent?.action == ACTION_ENABLE_AUDIO) {
@@ -352,7 +352,6 @@ class ScreenCaptureService : Service() {
             }
             playbackAudioRecord = record
             playbackCaptureActive = true
-            audioActive = true
             promoteForeground()
             sendResult("已启动 Android 内部播放音频捕获。请播放视频；音频将分段送到配置的语音识别 API，再翻译为中文。")
             Thread({
@@ -575,16 +574,22 @@ class ScreenCaptureService : Service() {
         virtualDisplay = null
         try { imageReader?.close() } catch (_: Exception) {}
         imageReader = null
+        handler?.removeCallbacksAndMessages(null)
+        worker?.quitSafely()
+        worker = null
+        handler = null
+        if (playbackCaptureActive) {
+            // Keep the MediaProjection alive: AudioPlaybackCaptureConfiguration depends on it.
+            promoteForeground()
+            updateOverlay("屏幕识别已停止，内部音频翻译仍在运行。")
+            return
+        }
         val oldProjection = projection
         projection = null
         if (stopProjection && oldProjection != null) {
             stoppingProjection = true
             try { oldProjection.stop() } catch (_: Exception) {} finally { stoppingProjection = false }
         }
-        handler?.removeCallbacksAndMessages(null)
-        worker?.quitSafely()
-        worker = null
-        handler = null
         if (audioActive) {
             promoteForeground()
             updateOverlay("屏幕识别已停止，语音翻译仍在运行。")
