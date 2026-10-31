@@ -49,6 +49,7 @@ class ScreenCaptureService : Service() {
     private var overlayTextView: TextView? = null
     private var overlayManager: WindowManager? = null
     @Volatile private var overlayDismissed = false
+    @Volatile private var latestDisplayText = "ScreenTranslator 正在识别屏幕…"
     private val mainHandler = Handler(Looper.getMainLooper())
     private val translationExecutor = Executors.newSingleThreadExecutor()
     private val translationLock = Any()
@@ -78,7 +79,8 @@ class ScreenCaptureService : Service() {
         }
         if (intent?.action == ACTION_SHOW_TRANSLATION) {
             overlayDismissed = false
-            updateOverlay(intent.getStringExtra(EXTRA_OCR_TEXT).orEmpty())
+            val requestedText = intent.getStringExtra(EXTRA_OCR_TEXT).orEmpty()
+            updateOverlay(requestedText.ifBlank { latestDisplayText })
             return START_NOT_STICKY
         }
         if (intent?.action == ACTION_TRANSLATE_TEXT) {
@@ -207,6 +209,7 @@ class ScreenCaptureService : Service() {
     }
 
     private fun showOverlay(initialText: String) {
+        latestDisplayText = initialText
         if (!android.provider.Settings.canDrawOverlays(this) || overlayDismissed) return
         mainHandler.post {
             if (overlayView != null || finished || overlayDismissed) return@post
@@ -264,6 +267,7 @@ class ScreenCaptureService : Service() {
     }
 
     private fun updateOverlay(text: String) {
+        latestDisplayText = text
         mainHandler.post {
             if (overlayDismissed) return@post
             val textView = overlayTextView
