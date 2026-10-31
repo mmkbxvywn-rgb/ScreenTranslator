@@ -1,16 +1,15 @@
 # ScreenTranslator
 
-Android prototype for translating on-screen text and spoken audio into Simplified Chinese.
+Android app prototype for translating on-screen text and spoken audio into Simplified Chinese.
 
-## Implemented
+## Features
 
-- Android MediaProjection consent flow and foreground screen-capture service.
-- On-device Chinese OCR with Google ML Kit, sampling the screen about every 1.6 seconds and translating changed text.
-- Configurable OpenAI-compatible `/chat/completions` endpoint, API key, and model.
-- Translation runs in the foreground service, so switching to another app does not depend on the activity staying visible.
-- Floating subtitle overlay with a close (×) control; the app can reopen it and restore the latest translation.
-- Optional repeated microphone speech recognition and translation, with a configurable recognition language code (default `en-US`).
-- Foreground-service handling for screen capture and microphone speech recognition.
+- Android MediaProjection screen capture and floating subtitles.
+- On-device Chinese OCR using Google ML Kit.
+- Online translation through a configurable OpenAI-compatible `/chat/completions` API.
+- Offline translation mode using Google ML Kit on-device translation. Translation models are downloaded on first use and retained on the device; after the needed language model has downloaded, text translation can work without network access.
+- A visible button switches between online and offline translation.
+- Android internal playback audio capture, with speech transcription sent to a configurable `/audio/transcriptions` API.
 
 ## Build and install
 
@@ -19,15 +18,21 @@ GitHub Actions builds a debug APK on each push to `main`. Open the repository's 
 ## First use
 
 1. Install the debug APK.
-2. Enter the API endpoint, API key, and model, then save the settings.
-3. For screen translation, allow **Display over other apps**, tap **Authorize and start live recognition**, and approve Android's screen-capture prompt.
-4. For speech translation, allow **Display over other apps**, enter the source language code (for example `en-US`, `ja-JP`, or `ko-KR`), tap **Start speech transcription and translation**, and grant microphone permission.
-5. To stop screen OCR, tap **Stop screen recognition**. The speech recognizer can continue if it is active. To stop speech recognition, tap its stop button.
+2. Allow **Display over other apps** and tap **Authorize and start live recognition**; approve Android's screen-capture prompt.
+3. Choose online or offline translation with the translation-mode button.
+4. For online translation, configure the API endpoint, API key, and model.
+5. For speech translation, configure a provider that supports `/audio/transcriptions`, choose the audio language, grant Android's audio permission, then start internal audio capture after screen-capture authorization.
 
-## Important limitations
+## Offline mode notes
 
-- The APK has been built by GitHub Actions but has not yet been verified on a physical device; overlay behavior and manufacturer background restrictions still need device testing.
-- Speech recognition uses the phone microphone and Android's speech-recognition service. It does not capture another app's internal audio stream directly; speaker playback may be picked up, but headphones or quiet playback may not be audible to the microphone.
+- The translation engine runs on-device, but ML Kit language models are **downloaded on first use rather than bundled inside the APK**. Keep a network connection for the first use of each source language; after download, that language's translation model can work offline.
+- Offline mode applies to text translation, including recognized screen text and transcribed speech. **Speech-to-text itself still uses the configured online `/audio/transcriptions` API**, so full offline audio translation is not implemented in this version.
+- If the detected source language is not supported by ML Kit, switch to online translation.
+
+## Limitations
+
+- The APK must be tested on the target physical device; Android overlay behavior, internal audio capture support, and manufacturer background restrictions can vary.
+- Some apps prohibit internal playback capture.
 - Screen OCR samples frames periodically, so very fast-changing text can be missed.
-- Recognized screen text and speech transcripts are sent to the configured translation API. Do not use it on sensitive screens unless you trust that provider.
-- API keys are stored in the app's private local preferences. Debug APKs are development builds, not signed for public distribution.
+- Online mode sends recognized text to the configured translation provider. Audio speech recognition sends captured audio to the configured transcription provider.
+- API keys are stored in app-private local preferences. Debug APKs are development builds, not signed for public distribution.
