@@ -363,9 +363,8 @@ class ScreenCaptureService : Service() {
             promoteForeground()
             sendResult("已启动 Android 内部播放音频捕获。请播放视频；音频将分段送到配置的语音识别 API，再翻译为中文。")
             Thread({
-                val chunkBytes = sampleRate * 2 * 8
                 val buffer = ByteArray(8192)
-                val chunk = ByteArrayOutputStream(chunkBytes)
+                val chunk = ByteArrayOutputStream(sampleRate * 2 * 8)
                 var lastSubmit = System.currentTimeMillis()
                 try {
                     record.startRecording()
@@ -373,8 +372,12 @@ class ScreenCaptureService : Service() {
                         val count = record.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING)
                         if (count > 0) {
                             chunk.write(buffer, 0, count)
+                            val prefsNow = getSharedPreferences("translator_settings", MODE_PRIVATE)
+                            val fastModeNow = prefsNow.getBoolean("fast_sentence_mode", false)
+                            val targetSeconds = if (fastModeNow) 3 else 8
+                            val targetBytes = sampleRate * 2 * targetSeconds
                             val now = System.currentTimeMillis()
-                            if (chunk.size() >= chunkBytes || now - lastSubmit >= 8000L) {
+                            if (chunk.size() >= targetBytes || now - lastSubmit >= targetSeconds * 1000L) {
                                 val pcm = chunk.toByteArray()
                                 chunk.reset()
                                 lastSubmit = now
@@ -383,7 +386,7 @@ class ScreenCaptureService : Service() {
                                     playbackTranscriptionExecutor.execute {
                                         val transcript = transcribePlaybackAudio(wav, language)
                                         if (transcript.isNotBlank() && !transcript.startsWith("语音识别 API")) {
-                                            enqueueTranslation(transcript, "speech")
+                                            handleTranscribedSpeech(transcript, fastModeNow)
                                         } else if (transcript.startsWith("语音识别 API")) {
                                             sendResult(transcript)
                                         }
@@ -497,6 +500,45 @@ class ScreenCaptureService : Service() {
         } finally {
             connection?.disconnect()
         }
+    }
+
+    private val speechSentenceLock = Any()
+    private var pendingSpeechSentence = ""
+
+    private fun handleTranscribedSpeech(transcript: String, fastMode: Boolean) {
+        if (!fastMode) {
+            enqueueTranslation(transcript.trim(), "speech")
+            return
+        }
+        // Keep incomplete fragments until punctuation indicates a likely sentence boundary.
+        // For very long fragments, use a clause boundary rather than waiting indefinitely.
+        val ready = mutableListOf<String>()
+        synchronized(speechSentenceLock) {
+            val incoming = transcript.trim()
+            if (incoming.isBlank()) return
+            pendingSpeechSentence = (pendingSpeechSentence + " " + incoming).trim()
+            val pieces = Regex("(?<=[.!?。！？；;])\\s*").split(pendingSpeechSentence)
+            if (pieces.size > 1) {
+                val completedText = pieces.dropLast(1).joinToString(" ").trim()
+                if (completedText.isNotBlank()) ready.addAll(splitSpeechSentences(completedText))
+                pendingSpeechSentence = pieces.last().trim()
+            }
+            if (pendingSpeechSentence.length >= 48) {
+                val clauseBoundary = Regex("(?<=[,，、:：])\\s*").split(pendingSpeechSentence)
+                if (clauseBoundary.size > 1) {
+                    val completedClause = clauseBoundary.dropLast(1).joinToString(" ").trim()
+                    if (completedClause.isNotBlank()) ready.add(completedClause)
+                    pendingSpeechSentence = clauseBoundary.last().trim()
+                }
+            }
+        }
+        ready.filter { it.isNotBlank() }.forEach { enqueueTranslation(it, "speech") }
+    }
+
+    private fun splitSpeechSentences(text: String): List<String> {
+        return text.split(Regex("(?<=[.!?。！？；;])\\s*"))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
     }
 
     private fun enqueueTranslation(sourceText: String, sourceType: String) {
